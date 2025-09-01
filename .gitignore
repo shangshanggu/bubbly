@@ -1,0 +1,11 @@
+# Ignore Augment tooling directory
+.augment/
+.augment/**
+
+# Ignore all files in doc
+doc/
+doc/**
+
+# MacOS
+.DS_Store
+

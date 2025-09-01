@@ -1,0 +1,2804 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>have a bubbly one.</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React 18 UMD -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX in browser (dev only) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    <style>
+      .context-menu-backdrop{position:fixed;inset:0;z-index:49}
+      .context-menu{position:fixed;z-index:50;background:#1f2937;color:#e5e7eb;border-radius:.5rem;box-shadow:0 10px 25px rgba(0,0,0,.5);padding:.5rem;}
+    </style>
+  </head>
+
+  <body class="bg-gray-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef } = React;
+
+      // The main App component that contains all the logic and UI
+const App = () => {
+  // State for the list of to-do items (bubbles)
+  const [todos, setTodos] = useState([]);
+  // State for the list of finished items (objects with text, group, id, etc.)
+  const [doneItems, setDoneItems] = useState([]);
+  // State for the currently selected to-do item
+  const [selectedTodoId, setSelectedTodoId] = useState(null);
+  // State for the active to-do item (running timer)
+  const [activeTodoId, setActiveTodoId] = useState(null);
+  // State for the new to-do item from the input
+  const [newTodo, setNewTodo] = useState('');
+  const [newColor, setNewColor] = useState('bg-blue-600');
+  // State for groups management
+  const [groups, setGroups] = useState(['Ungrouped', 'Work', 'Personal', 'Learning']);
+  const [groupColors, setGroupColors] = useState({});
+  const [newGroup, setNewGroup] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('Ungrouped');
+  const [groupsExpanded, setGroupsExpanded] = useState(false);
+  const [unfinishedTasksExpanded, setUnfinishedTasksExpanded] = useState(true);
+  const [timersExpanded, setTimersExpanded] = useState(true);
+  const [alwaysDefaultToUngrouped, setAlwaysDefaultToUngrouped] = useState(false);
+  // State for export markdown output
+  const [importText, setImportText] = useState('');
+  // State for "Add checked to Finished" option
+  const [addCheckedToFinished, setAddCheckedToFinished] = useState(true);
+  // State for finished tasks expansion
+  const [finishedTasksExpanded, setFinishedTasksExpanded] = useState(false);
+  // Import section fold state (load from localStorage)
+  const [importExpanded, setImportExpanded] = useState(() => {
+    try {
+      const saved = localStorage.getItem('importExpanded');
+      return saved ? JSON.parse(saved) : false; // Default to collapsed
+    } catch {
+      return false; // Default to collapsed
+    }
+  });
+  // Intro overlay dismissal state (kept for future, not required when using dummy)
+  const [introDismissed, setIntroDismissed] = useState(false);
+  // Clock and session timing
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [lastTaskStartAt, setLastTaskStartAt] = useState(null);
+  const [lastFocusStartAt, setLastFocusStartAt] = useState(null);
+  const [totalFocusMs, setTotalFocusMs] = useState(0);
+
+  // State to manage the active timer interval
+  const [timerInterval, setTimerInterval] = useState(null);
+
+  // States for dragging and resizing of bubbles
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [draggedItemId, setDraggedItemId] = useState(null);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const movedRef = useRef(false);
+  // Context menu for right-click edit
+  const [contextMenu, setContextMenu] = useState({ open: false, x: 0, y: 0, todoId: null });
+  // ===== VIEWPORT/CAMERA SYSTEM =====
+  const [viewport, setViewport] = useState({
+    centerX: WORLD_WIDTH / 2,   // Center of world
+    centerY: WORLD_HEIGHT / 2,  // Center of world
+    zoom: 1                     // Zoom level
+  });
+  const [isCanvasDragging, setIsCanvasDragging] = useState(false);
+  const [canvasDragStart, setCanvasDragStart] = useState({ x: 0, y: 0 });
+
+  // Panel state
+  const [leftPanelWidth, setLeftPanelWidth] = useState(360);
+  const leftPanelResizing = useRef(false);
+  const leftPanelResizeStart = useRef({ x: 0, width: 360 });
+
+  // Colour palette for categories (removed green as it's used for active tasks)
+  const COLORS = ['bg-blue-600','bg-rose-600','bg-amber-600','bg-violet-600','bg-cyan-600','bg-slate-600','bg-indigo-600','bg-pink-600'];
+
+
+  // Human-friendly labels for color options and ring mapping
+  const COLOR_LABELS = {
+    'bg-blue-600': 'blue',
+    'bg-rose-600': 'red',
+    'bg-amber-600': 'amber',
+    'bg-violet-600': 'violet',
+    'bg-cyan-600': 'cyan',
+    'bg-slate-600': 'slate',
+    'bg-indigo-600': 'indigo',
+    'bg-pink-600': 'pink',
+  };
+
+  const RING_MAP = {
+    'bg-blue-600': 'ring-blue-400',
+    'bg-rose-600': 'ring-rose-400',
+    'bg-amber-600': 'ring-amber-400',
+    'bg-violet-600': 'ring-violet-400',
+    'bg-cyan-600': 'ring-cyan-400',
+    'bg-slate-600': 'ring-slate-400',
+    'bg-indigo-600': 'ring-indigo-400',
+    'bg-pink-600': 'ring-pink-400',
+  };
+  const ringClassFor = (bg) => RING_MAP[bg] || 'ring-blue-400';
+
+  // ===== COORDINATE MAP SYSTEM =====
+  // World coordinate system: 2400x2400 pixels
+  // X-axis: 0-2400 (800px per day, 3 days total)
+  // Y-axis: 0-2400 (100px per hour, 24 hours total)
+  const WORLD_WIDTH = 2400;
+  const WORLD_HEIGHT = 2400;
+  const PIXELS_PER_DAY = 800;
+  const PIXELS_PER_HOUR = 100;
+
+  // Convert time/date to world coordinates
+  const timeToWorldCoords = (hour, date) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    const dayOffset = Math.floor((targetDate - today) / (1000 * 60 * 60 * 24));
+
+    const worldX = Math.max(0, Math.min(WORLD_WIDTH - 1, dayOffset * PIXELS_PER_DAY + (PIXELS_PER_DAY / 2)));
+    const worldY = Math.max(0, Math.min(WORLD_HEIGHT - 1, hour * PIXELS_PER_HOUR));
+
+    return { worldX, worldY };
+  };
+
+  // Convert world coordinates back to time/date
+  const worldCoordsToTime = (worldX, worldY) => {
+    const dayOffset = Math.floor(worldX / PIXELS_PER_DAY);
+    const hour = worldY / PIXELS_PER_HOUR;
+
+    const date = new Date();
+    date.setDate(date.getDate() + dayOffset);
+
+    return { hour, date };
+  };
+
+  // Convert world coordinates to screen coordinates
+  // X-axis: fixed 6:1:1 day segments (Today: 6/8 width, Tomorrow: 1/8, Day after: 1/8)
+  // Y-axis: zoomable around viewport.centerY; 100% zoom shows 12 hours (6–18)
+  const worldToScreen = (worldX, worldY, containerRect) => {
+    if (!containerRect) return { screenX: 0, screenY: 0 };
+
+    const W = containerRect.width;
+    const H = containerRect.height;
+
+    // Y scale: at zoom=1, height maps to 12 hours
+    const screenCenterY = H / 2;
+    const scaleY = H / (12 * PIXELS_PER_HOUR);
+    const screenY = (worldY - viewport.centerY) * (viewport.zoom * scaleY) + screenCenterY;
+
+    // X fixed 6:1:1
+    const todayWidth = W * (6/8);
+    const otherWidth = W * (1/8);
+    const dayIndex = Math.max(0, Math.min(2, Math.floor(worldX / PIXELS_PER_DAY)));
+    const within = (worldX - dayIndex * PIXELS_PER_DAY) / PIXELS_PER_DAY; // 0..1
+    const startX = dayIndex === 0 ? 0 : (dayIndex === 1 ? todayWidth : todayWidth + otherWidth);
+    const segWidth = dayIndex === 0 ? todayWidth : otherWidth;
+    const screenX = startX + within * segWidth;
+
+    return { screenX, screenY };
+  };
+
+  // Convert screen coordinates to world coordinates (inverse of above mapping)
+  const screenToWorld = (screenX, screenY, containerRect) => {
+    if (!containerRect) return { worldX: 0, worldY: 0 };
+
+    const W = containerRect.width;
+    const H = containerRect.height;
+
+    // Y inverse with baseline 12h at zoom 1
+    const screenCenterY = H / 2;
+    const scaleY = H / (12 * PIXELS_PER_HOUR);
+    const worldY = (screenY - screenCenterY) / (viewport.zoom * scaleY) + viewport.centerY;
+
+    // X inverse with 6:1:1 layout
+    const todayWidth = W * (6/8);
+    const otherWidth = W * (1/8);
+    let dayIndex = 0;
+    let startX = 0;
+    let segWidth = todayWidth;
+    if (screenX >= todayWidth && screenX < todayWidth + otherWidth) {
+      dayIndex = 1; startX = todayWidth; segWidth = otherWidth;
+    } else if (screenX >= todayWidth + otherWidth) {
+      dayIndex = 2; startX = todayWidth + otherWidth; segWidth = otherWidth;
+    }
+    const within = Math.max(0, Math.min(1, (screenX - startX) / segWidth));
+    const worldX = dayIndex * PIXELS_PER_DAY + within * PIXELS_PER_DAY;
+
+    return { worldX, worldY };
+  };
+
+  // Group color mapping with overrides
+  const getGroupColor = (groupName) => {
+    if (groupColors && groupColors[groupName]) return groupColors[groupName];
+    const groupIndex = groups.indexOf(groupName);
+    return COLORS[groupIndex % COLORS.length] || 'bg-blue-600';
+  };
+
+  // Panel positioning (both panels draggable/dockable)
+  const [leftPanelPos, setLeftPanelPos] = useState({ x: 16, y: 16 });
+  const defaultRightY = typeof window !== 'undefined' ? Math.max(8, window.innerHeight - 380 - 16) : 200;
+  const [rightPanelPos, setRightPanelPos] = useState({ x: 16, y: defaultRightY });
+  const [rightPanelDocked, setRightPanelDocked] = useState(true);
+  const [isPanelDragging, setIsPanelDragging] = useState(false);
+  const [draggingPanel, setDraggingPanel] = useState(null); // 'left' | 'right' | null
+  const [leftPanelDragging, setLeftPanelDragging] = useState(false);
+
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
+  const [leftSlideOpen, setLeftSlideOpen] = useState(false);
+  const [rightSlideOpen, setRightSlideOpen] = useState(false);
+  const [bottomBarCollapsed, setBottomBarCollapsed] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  const leftPanelDragStart = useRef({ x: 0, y: 0 });
+  const leftPanelStartPos = useRef({ x: 16, y: 16 });
+  const panelDragStart = useRef({ x: 0, y: 0 });
+  const panelStartPos = useRef({ x: 0, y: 0 });
+
+  // Persist right panel position only (left panel is fixed)
+  useEffect(() => {
+    const rp = localStorage.getItem('panel-right');
+
+    // Calculate safe positions to prevent overlap with fixed left panel
+    const leftPanelWidth = 360;
+    const rightPanelWidth = 320;
+    const minGap = 20; // Minimum gap between panels
+    const screenWidth = window.innerWidth;
+    const minRightX = leftPanelWidth + minGap + 16; // Minimum X to avoid left panel
+
+    // Set right panel position
+    if (rp) {
+      try {
+        const savedRight = JSON.parse(rp);
+        // Ensure right panel doesn't overlap with left panel or go off screen
+        setRightPanelPos({
+          x: Math.max(16, Math.min(savedRight.x, screenWidth - rightPanelWidth - 8)),
+          y: Math.max(8, savedRight.y)
+        });
+        setRightPanelDocked(savedRight.docked ?? false);
+      } catch(e){
+        const rightPanelWidth = 320;
+        const panelH = 380;
+        const defaultRightX = Math.max(8, (window.innerWidth - rightPanelWidth) / 2);
+        const defaultRightY = Math.max(8, (window.innerHeight - panelH) / 2);
+        setRightPanelPos({ x: defaultRightX, y: defaultRightY });
+        setRightPanelDocked(false);
+      }
+    } else {
+      // Default: float in center
+      const rightPanelWidth = 320;
+      const panelH = 380;
+      const defaultRightX = Math.max(8, (window.innerWidth - rightPanelWidth) / 2);
+      const defaultRightY = Math.max(8, (window.innerHeight - panelH) / 2);
+      setRightPanelPos({ x: defaultRightX, y: defaultRightY });
+      setRightPanelDocked(false);
+    }
+  }, []);
+
+  // Only persist right panel position + docked state (left panel is fixed)
+  useEffect(() => {
+    localStorage.setItem('panel-right', JSON.stringify({ ...rightPanelPos, docked: rightPanelDocked }));
+  }, [rightPanelPos, rightPanelDocked]);
+
+  // Persist import section fold state
+  useEffect(() => {
+    localStorage.setItem('importExpanded', JSON.stringify(importExpanded));
+  }, [importExpanded]);
+  // Use refs to store the main container (canvas), the outer root container, and the zoom controls for correct positioning math
+  const containerRef = useRef(null);
+  const rootRef = useRef(null);
+  const zoomControlsRef = useRef(null);
+  const currentFocusInputRef = useRef(null);
+
+  // Load viewport from localStorage - but always center on current time initially
+  useEffect(() => {
+    try {
+      const savedViewport = JSON.parse(localStorage.getItem('viewport') || '{}');
+      // Always center on current time, but preserve zoom level if saved
+      const now = new Date();
+      const hour = now.getHours() + (now.getMinutes() / 60);
+      const { worldX, worldY } = timeToWorldCoords(hour, now);
+      setViewport({
+        centerX: worldX,
+        centerY: worldY,
+        zoom: savedViewport.zoom ? Math.max(0.1, Math.min(3.0, savedViewport.zoom)) : 1
+      });
+    } catch {
+      const now = new Date();
+      const hour = now.getHours() + (now.getMinutes() / 60);
+      const { worldX, worldY } = timeToWorldCoords(hour, now);
+      // Centre to current 6–18 window at 100% zoom: centerY should be at noon (12h)
+      const noon = timeToWorldCoords(12, now).worldY;
+      setViewport(prev => ({ centerX: prev.centerX, centerY: noon, zoom: 1 }));
+    }
+  }, []);
+  // If no saved viewport, fit world to container on first layout
+  useEffect(() => {
+    try {
+      // no-op
+      if (localStorage.getItem('viewport')) return; // honour saved state
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (rect) {
+        const fitZoom = Math.min(rect.width / WORLD_WIDTH, rect.height / WORLD_HEIGHT);
+        setViewport(prev => ({ ...prev, zoom: Math.max(0.1, Math.min(3.0, fitZoom || 1)) })); // affects Y only
+      }
+    } catch {}
+  }, []);
+
+  const dismissIntro = React.useCallback(() => setIntroDismissed(true), []);
+
+
+
+  // Persist viewport when it changes
+  useEffect(() => {
+    localStorage.setItem('viewport', JSON.stringify(viewport));
+  }, [viewport]);
+
+  // When a real todo exists, permanently dismiss the intro overlay
+  useEffect(() => {
+    if (todos.length > 0) setIntroDismissed(true);
+  }, [todos.length]);
+
+  // Use useEffect to load data from localStorage on initial render
+  useEffect(() => {
+    try {
+      const storedTodos = JSON.parse(localStorage.getItem('todos')) || [];
+      const storedDoneItems = JSON.parse(localStorage.getItem('doneItems')) || [];
+      const storedGroups = JSON.parse(localStorage.getItem('groups')) || ['Ungrouped', 'Work', 'Personal', 'Learning'];
+      const storedGroupColors = JSON.parse(localStorage.getItem('groupColors') || '{}');
+
+      // Normalise loaded todos: ensure world coords correspond to their created time/date; clamp to world bounds
+      const normalisedTodos = storedTodos.map(t => {
+        const createdDate = t.createdDate ? new Date(t.createdDate) : new Date();
+        const createdHour = typeof t.createdHour === 'number' ? t.createdHour : (new Date(t.createdTime||Date.now()).getHours());
+        const base = timeDateToWorldPosition(createdHour, createdDate);
+        const worldX = Math.max(0, Math.min(WORLD_WIDTH - 1, (t.worldX ?? base.worldX)));
+        const worldY = Math.max(0, Math.min(WORLD_HEIGHT - 1, (t.worldY ?? base.worldY)));
+        return { ...t, worldX, worldY };
+      });
+
+      // Check if there are persisted todos to suppress the intro overlay on first paint
+      const hasAnyPersistedTodos = (() => {
+        try { return (JSON.parse(localStorage.getItem('todos') || '[]') || []).length > 0; } catch { return false; }
+      })();
+
+      // Convert any string-based doneItems to object format for backwards compatibility
+      const normalisedDoneItems = storedDoneItems.map(item => {
+        // If it's already an object with the expected properties, use it as is
+        if (item && typeof item === 'object' && item.id && item.text) {
+          return item;
+        }
+
+        // Otherwise, it's likely an old string format, convert it to object
+        const now = new Date();
+        const timeStr = now.toLocaleString();
+        const defaultGroup = storedGroups[0] || 'Ungrouped';
+
+        // Try to extract text from string format
+        let text = '';
+        if (typeof item === 'string') {
+          // Extract text from markdown format: "- [x] Task text | other info"
+          const match = item.match(/- \[x\] (.*?)(?:\s+\||\s*$)/);
+          text = match ? match[1].trim() : item;
+        }
+
+        return {
+          id: Date.now() + Math.floor(Math.random() * 10000), // Generate a unique ID
+          text: text || "Imported task",
+          originalId: null,
+          group: defaultGroup,
+          color: storedGroupColors[defaultGroup] || getGroupColor(defaultGroup),
+          completedAt: now.toISOString(),
+          startedAt: timeStr,
+          endedAt: timeStr,
+          duration: "00:00:00",
+          elapsedTime: 0
+        };
+      });
+
+      setTodos(normalisedTodos);
+      setDoneItems(normalisedDoneItems);
+      setGroups(storedGroups);
+      setGroupColors(storedGroupColors);
+      if (storedGroups.length > 0) setSelectedGroup(storedGroups[0]);
+    } catch (e) {
+      console.error("Failed to load data from localStorage", e);
+    }
+  }, []);
+
+  // Use useEffect to save data to localStorage whenever todos, doneItems, or groups change
+  useEffect(() => {
+    try {
+      localStorage.setItem('todos', JSON.stringify(todos));
+      localStorage.setItem('doneItems', JSON.stringify(doneItems));
+      localStorage.setItem('groups', JSON.stringify(groups));
+      localStorage.setItem('groupColors', JSON.stringify(groupColors));
+      // Propagate colour updates to existing todos when group colours change
+      // This keeps bubbles in sync with the legend settings
+      // Do this only when groupColors changed
+    } catch (e) {
+
+
+      console.error("Failed to save data to localStorage", e);
+    }
+  }, [todos, doneItems, groups, groupColors]);
+  // Reflect group colour changes into todos' color fields
+  useEffect(() => {
+    setTodos(prev => prev.map(t => ({ ...t, color: getGroupColor(t.group) })));
+  }, [groupColors]);
+
+
+  // Auto-save snapshot every 30 seconds (idempotent with above but keeps behaviour parity)
+  useEffect(() => {
+    const id = setInterval(() => {
+      try {
+        localStorage.setItem('todos', JSON.stringify(todos));
+        localStorage.setItem('doneItems', JSON.stringify(doneItems));
+      } catch (e) {
+        console.error('Auto-save failed', e);
+      }
+    }, 30000);
+    return () => clearInterval(id);
+  }, [todos, doneItems]);
+
+  // Tick clock - sync all timers to the same second boundary
+  useEffect(() => {
+    let intervalId;
+
+    const syncToSecond = () => {
+      const now = Date.now();
+      const msToNextSecond = 1000 - (now % 1000);
+
+      setTimeout(() => {
+        // Set initial time
+        const syncedTime = Date.now();
+        setCurrentTime(syncedTime);
+
+        // Start interval that fires exactly on second boundaries
+        intervalId = setInterval(() => {
+          const newSyncedTime = Date.now();
+          setCurrentTime(newSyncedTime);
+        }, 1000);
+      }, msToNextSecond);
+    };
+
+    syncToSecond();
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, []);
+
+  // Use useEffect to manage the timer for the active task only - sync with main clock
+  useEffect(() => {
+    // Clear any existing timer
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      setTimerInterval(null);
+    }
+
+    if (activeTodoId) {
+      // Sync task timer with main clock updates
+      const interval = setInterval(() => {
+        setTodos(prev => prev.map(todo =>
+          todo.id === activeTodoId
+            ? { ...todo, elapsedTime: (todo.elapsedTime || 0) + 1000 }
+            : todo
+        ));
+      }, 1000);
+      setTimerInterval(interval);
+    }
+
+    return () => {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+      }
+    };
+  }, [activeTodoId]); // Remove timerInterval from dependencies to avoid infinite loop
+
+  // Helper function to format milliseconds into HH:MM:SS
+  const formatTime = (ms) => {
+    if (ms === null || ms === undefined || isNaN(ms) || ms < 0) return "00:00:00";
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    return [hours, minutes, seconds]
+      .map(v => v < 10 ? `0${v}` : v)
+      .join(':');
+  };
+
+  // Enhanced parse todos from free-form text (markdown, plain lines, Apple Notes, tabular format)
+  const parseTodosFromText = (text) => {
+    const lines = (text || '').split('\n');
+    const items = [];
+
+    // Check if this is a tabular format import
+    const isTabularFormat = lines.some(line => line.includes('| Task | Status |'));
+
+    if (isTabularFormat) {
+      // Parse tabular format with enhanced metadata
+      let inTable = false;
+      for (let i = 0; i < lines.length; i++) {
+        const s = lines[i].trim();
+
+        // Skip headers and separators
+        if (s.startsWith('|') && s.includes('Task') && s.includes('Status')) {
+          inTable = true;
+          continue;
+        }
+        if (s.startsWith('|---')) continue;
+        if (s.startsWith('#')) continue;
+
+        if (inTable && s.startsWith('|')) {
+          const parts = s.split('|').map(p => p.trim()).filter(p => p);
+          if (parts.length >= 8) {
+            const [task, status, started, ended, total, group, x, y, radius] = parts;
+
+            items.push({
+              text: task,
+              completed: status === 'finished',
+              group: group || 'Ungrouped',
+              started: started !== 'N/A' ? started : null,
+              ended: ended !== 'N/A' ? ended : null,
+              total: total || '00:00:00',
+              centerX: parseInt(x) || 0,
+              centerY: parseInt(y) || 0,
+              radius: parseInt(radius) || 75
+            });
+          }
+        }
+      }
+    } else {
+      // Parse simple format (existing logic)
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        if (!raw) continue;
+        const s = raw.trim();
+        if (!s) continue;
+        let m;
+        // Markdown checked: - [x] Task or * [x] Task or [x] Task
+        if ((m = s.match(/^[-*]?\s*\[\s*[xX]\s*\]\s+(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: true });
+          continue;
+        }
+        // Markdown unchecked: - [ ] Task or * [ ] Task or [ ] Task
+        if ((m = s.match(/^[-*]?\s*\[\s*\]\s+(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: false });
+          continue;
+        }
+        // Apple Notes / symbols (checked)
+        if ((m = s.match(/^[☑✅✔✓☒]\s*(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: true });
+          continue;
+        }
+        // Apple Notes / symbols (unchecked)
+        if ((m = s.match(/^[☐◻️◻□]\s*(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: false });
+          continue;
+        }
+        // Bulleted line becomes an unchecked task
+        if ((m = s.match(/^(?:[-*•·])\s+(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: false });
+          continue;
+        }
+        // Numbered list: 1. Task => unchecked
+        if ((m = s.match(/^\d+\.\s+(.*)$/))) {
+          items.push({ text: m[1].trim(), completed: false });
+          continue;
+        }
+        // Plain line => unchecked task
+        items.push({ text: s, completed: false });
+      }
+    }
+    return items;
+  };
+
+  // Compute a balanced grid slot (percent units) for index within total
+  const getGridSlot = (index, total) => {
+    const cols = Math.ceil(Math.sqrt(total));
+    const rows = Math.ceil(total / cols);
+    // Use a central area that scales with total to avoid excessive spacing
+    const area = total <= 4 ? 25 : total <= 9 ? 35 : 45; // tighter clustering (50% closer)
+    const margin = (100 - area) / 2;
+    const sx = cols > 1 ? (100 - 2 * margin) / (cols - 1) : 0;
+    const sy = rows > 1 ? (100 - 2 * margin) / (rows - 1) : 0;
+    const r = Math.floor(index / cols);
+    const c = index % cols;
+    return { x: margin + c * sx, y: margin + r * sy };
+  };
+
+  // Helper function to add some randomness to avoid exact overlaps
+  const addPositionJitter = (position, jitterAmount = 2) => {
+    return {
+      x: position.x + (Math.random() - 0.5) * jitterAmount,
+      y: position.y + (Math.random() - 0.5) * jitterAmount
+    };
+  };
+
+  // Replace balanced grid with time/date-based positioning for imported items
+  const assignBalancedPositions = (items, existingCount) => {
+    return items.map((it, i) => {
+      // For imported items without specific time, place them near the current local time today
+      const now = new Date();
+      const currentHour = now.getHours() + (now.getMinutes() / 60);
+      const defaultGroup = getDefaultGroup();
+      const worldCoords = timeDateToWorldPosition(currentHour, now);
+
+      // Add light jitter so they don't overlap exactly
+      const jitteredWorldX = worldCoords.worldX + (Math.random() - 0.5) * 60;
+      const jitteredWorldY = worldCoords.worldY + (Math.random() - 0.5) * 30;
+
+      return {
+        ...it,
+        size: it.size ?? 150,
+        worldX: jitteredWorldX,
+        worldY: jitteredWorldY,
+        color: it.color ?? getGroupColor(defaultGroup),
+        group: it.group ?? defaultGroup,
+        createdTime: it.createdTime ?? now.toISOString(),
+        createdHour: it.createdHour ?? currentHour,
+        createdDate: it.createdDate ?? now.toISOString().split('T')[0],
+      };
+    });
+  };
+
+  // Next grid position for a single new item given existing count
+  const getNextGridPosition = (existingCount) => getGridSlot(existingCount, (existingCount) + 1);
+
+
+  // Helper function to convert time and date to world coordinates (replaces timeDateToPosition)
+  const timeDateToWorldPosition = (hour, date) => {
+    return timeToWorldCoords(hour, date);
+  };
+
+  const getDefaultGroup = () => {
+    if (alwaysDefaultToUngrouped) {
+      return groups.includes('Ungrouped') ? 'Ungrouped' : (groups[0] || 'Ungrouped');
+    }
+    return selectedGroup;
+  };
+
+  // Function to add a new todo bubble
+  const addTodo = (e) => {
+    e.preventDefault();
+    if (newTodo.trim()) {
+      const now = new Date();
+      const currentHour = now.getHours() + (now.getMinutes() / 60); // Include minutes as decimal
+      const defaultGroup = getDefaultGroup();
+      const worldCoords = timeDateToWorldPosition(currentHour, now);
+
+      // Add some jitter to world coordinates
+      const jitteredWorldX = worldCoords.worldX + (Math.random() - 0.5) * 100;
+      const jitteredWorldY = worldCoords.worldY + (Math.random() - 0.5) * 50;
+
+      const newTodoItem = {
+        id: Date.now(),
+        text: newTodo,
+        elapsedTime: 0,
+        isEditing: false,
+        size: 150,
+        worldX: jitteredWorldX,
+        worldY: jitteredWorldY,
+        color: getGroupColor(defaultGroup),
+        group: defaultGroup,
+        createdTime: now.toISOString(),
+        createdHour: currentHour,
+        createdDate: now.toISOString().split('T')[0], // YYYY-MM-DD
+        // Enhanced metadata for export/import
+        started: null, // When task was first started
+        ended: null,   // When task was completed
+        total: 0,      // Total time spent in milliseconds
+        centerX: jitteredWorldX, // Center coordinates for positioning
+        centerY: jitteredWorldY,
+        radius: 75,    // Half of size for radius
+      };
+      setTodos(prev => {
+        const count = prev.length;
+        // Small right shift per new task to reduce overlap
+        const offsetX = (count % 12) * 40; // 40px per task, wrap every 12
+        const shifted = { ...newTodoItem, worldX: Math.min(WORLD_WIDTH - 1, newTodoItem.worldX + offsetX) };
+        return [...prev, shifted];
+      });
+      setNewTodo('');
+
+      // Centre viewport on the new bubble's Y only (X fixed by 3:1:1 lane)
+      setViewport(prev => ({ ...prev, centerY: jitteredWorldY }));
+    }
+  };
+
+  // Function to select or deselect a todo bubble (selection only; does not start focus)
+  const selectTodo = (todoId) => {
+    if (selectedTodoId === todoId) {
+      // Deselect
+      setSelectedTodoId(null);
+    } else {
+      setSelectedTodoId(todoId);
+    }
+  };
+
+  // Function to edit the text of a bubble
+  // Disable inline editing on bubbles: use Current Focus input instead
+  const startEditing = () => {};
+  // Complete a todo by id (move to done list)
+  const finishTodoById = (todoId) => {
+    const finishedItem = todos.find(todo => todo.id === todoId);
+    if (!finishedItem) return;
+    const endTime = new Date();
+    const startTime = lastTaskStartAt ? new Date(lastTaskStartAt) : endTime;
+    const duration = formatTime(finishedItem.elapsedTime);
+    if (lastFocusStartAt) {
+      setTotalFocusMs(prev => prev + (Date.now() - lastFocusStartAt));
+    }
+    const startTimeStr = startTime.toLocaleString();
+    const endTimeStr = endTime.toLocaleString();
+
+    // Store as object with all relevant information including enhanced metadata
+    const newDoneItem = {
+      id: Date.now(), // New unique ID for the completed task
+      text: finishedItem.text,
+      originalId: finishedItem.id,
+      group: finishedItem.group || getDefaultGroup(),
+      color: finishedItem.color || getGroupColor(finishedItem.group || getDefaultGroup()),
+      completedAt: endTime.toISOString(),
+      startedAt: startTimeStr,
+      endedAt: endTimeStr,
+      duration: duration,
+      elapsedTime: finishedItem.elapsedTime || 0,
+      // Enhanced metadata
+      started: finishedItem.started || startTime.toISOString(),
+      ended: endTime.toISOString(),
+      total: finishedItem.elapsedTime || 0,
+      centerX: finishedItem.centerX || finishedItem.worldX || 0,
+      centerY: finishedItem.centerY || finishedItem.worldY || 0,
+      radius: finishedItem.radius || (finishedItem.size / 2) || 75,
+      status: 'finished'
+    };
+
+    setDoneItems(prev => [...prev, newDoneItem]);
+    setTodos(prev => prev.filter(todo => todo.id !== todoId));
+    if (selectedTodoId === todoId) setSelectedTodoId(null);
+    // Preserve a different active focus session
+    if (activeTodoId === todoId) {
+      setActiveTodoId(null);
+      setLastFocusStartAt(null);
+    }
+  };
+
+  const removeTodoById = (todoId) => {
+    // Trigger delete animation, then remove the todo
+    triggerBubbleAnimation(todoId, 'delete', () => {
+      setTodos(prev => prev.filter(todo => todo.id !== todoId));
+      if (selectedTodoId === todoId) setSelectedTodoId(null);
+      if (activeTodoId === todoId) setActiveTodoId(null);
+    });
+  };
+
+  const handleTextChange = () => {};
+  const handleBlur = () => {};
+
+  // Function to "pop" the selected bubble and move it to the done list
+  const finishTodo = () => {
+    if (!selectedTodoId) return;
+    const finishedItem = todos.find(todo => todo.id === selectedTodoId);
+    if (!finishedItem) return;
+
+    const endTime = new Date();
+    const startTime = lastTaskStartAt ? new Date(lastTaskStartAt) : endTime;
+    const duration = formatTime(finishedItem.elapsedTime);
+
+    // Only accumulate and stop focus if finishing the active task itself
+    if (activeTodoId === selectedTodoId && lastFocusStartAt) {
+      setTotalFocusMs(prev => prev + (Date.now() - lastFocusStartAt));
+      setLastFocusStartAt(null);
+      setActiveTodoId(null);
+    }
+
+    const startTimeStr = startTime.toLocaleString();
+    const endTimeStr = endTime.toLocaleString();
+
+    // Store as object with all relevant information including enhanced metadata
+    const newDoneItem = {
+      id: Date.now(), // New unique ID for the completed task
+      text: finishedItem.text,
+      originalId: finishedItem.id,
+      group: finishedItem.group || getDefaultGroup(),
+      color: finishedItem.color || getGroupColor(finishedItem.group || getDefaultGroup()),
+      completedAt: endTime.toISOString(),
+      startedAt: startTimeStr,
+      endedAt: endTimeStr,
+      duration: duration,
+      elapsedTime: finishedItem.elapsedTime || 0,
+      // Enhanced metadata
+      started: finishedItem.started || startTime.toISOString(),
+      ended: endTime.toISOString(),
+      total: finishedItem.elapsedTime || 0,
+      centerX: finishedItem.worldX || finishedItem.centerX || 0,
+      centerY: finishedItem.worldY || finishedItem.centerY || 0,
+      radius: (finishedItem.size ? finishedItem.size / 2 : finishedItem.radius) || 75,
+      status: 'finished'
+    };
+
+    setDoneItems([...doneItems, newDoneItem]);
+    setTodos(todos.filter(todo => todo.id !== selectedTodoId));
+    setSelectedTodoId(null);
+  };
+
+  // Helper to start a task, preserving accumulated focus time
+  const startTask = (todoId) => {
+    // Accumulate any previous active focus segment
+    if (activeTodoId && lastFocusStartAt) {
+      setTotalFocusMs(prev => prev + (Date.now() - lastFocusStartAt));
+    }
+    setActiveTodoId(todoId);
+    const now = Date.now();
+    setLastTaskStartAt(now);
+    setLastFocusStartAt(now);
+    setSelectedTodoId(null);
+    setTimersExpanded(true);
+  };
+
+  // Randomly select an active todo and start it directly
+  const selectRandom = () => {
+    const active = todos;
+    if (active.length === 0) return;
+    const random = active[Math.floor(Math.random() * active.length)];
+    startTask(random.id);
+  };
+
+  // Pause: stop active focus time and accumulate to total
+  const pauseSelected = () => {
+    if (activeTodoId && lastFocusStartAt) {
+      setTotalFocusMs(prev => prev + (Date.now() - lastFocusStartAt));
+    }
+    setActiveTodoId(null);
+    setLastFocusStartAt(null);
+  };
+
+  // AFK: Clear both selected and active task states, stop timing
+  const goAFK = () => {
+    if (activeTodoId && lastFocusStartAt) {
+      setTotalFocusMs(prev => prev + (Date.now() - lastFocusStartAt));
+    }
+    setSelectedTodoId(null);
+    setActiveTodoId(null);
+    setLastFocusStartAt(null);
+  };
+
+  // Panel drag handlers (left and right)
+  const onPanelMouseDown = (e, which) => {
+    e.stopPropagation();
+    setIsPanelDragging(true);
+    setDraggingPanel(which);
+    panelDragStart.current = { x: e.clientX, y: e.clientY };
+    if (which === 'left') {
+      leftPanelDragStart.current = { x: e.clientX, y: e.clientY };
+      leftPanelStartPos.current = { ...leftPanelPos };
+    } else if (which === 'right') {
+      panelStartPos.current = { ...rightPanelPos };
+    }
+  };
+
+  const clamp = (val, min, max) => Math.min(Math.max(val, min), max);
+
+  // Copy all todos & finished as Markdown to clipboard
+  const copyTodosMarkdown = async () => {
+    try {
+      await navigator.clipboard.writeText(combinedMarkdown);
+      alert('Copied markdown to clipboard');
+    } catch (e) {
+      console.error('Clipboard copy failed', e);
+    }
+  };
+
+  // Drag and Resize handlers
+  const handleMouseDown = (e, todoId) => {
+    e.stopPropagation();
+    const isResizeHandle = e.target.classList.contains('resize-handle');
+
+    if (isResizeHandle) {
+      setIsResizing(true);
+      setIsDragging(false);
+    } else {
+      setIsDragging(true);
+      setIsResizing(false);
+    }
+
+    setDraggedItemId(todoId);
+    movedRef.current = false;
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleMouseMove = (e) => {
+    if (isPanelDragging && draggingPanel === 'left') {
+      const dx = e.clientX - leftPanelDragStart.current.x;
+      const dy = e.clientY - leftPanelDragStart.current.y;
+      const vw = window.innerWidth; const vh = window.innerHeight;
+      const leftW = 360, leftH = 720; // rough bounds
+      setLeftPanelPos({
+        x: clamp(leftPanelStartPos.current.x + dx, 0, vw - leftW),
+        y: clamp(leftPanelStartPos.current.y + dy, 0, vh - leftH),
+      });
+      return;
+    }
+    if (isPanelDragging && draggingPanel === 'right') {
+      const dx = e.clientX - panelDragStart.current.x;
+      const dy = e.clientY - panelDragStart.current.y;
+      const vw = window.innerWidth; const vh = window.innerHeight;
+      const rightW = 320, panelH = 400; // approx for clamping
+      setRightPanelPos({
+        x: clamp(panelStartPos.current.x + dx, 16, vw - rightW - 8),
+        y: clamp(panelStartPos.current.y + dy, 8, vh - panelH - 8),
+      });
+      return;
+    }
+    if (isDraggingActionBar) {
+      const dx = e.clientX - actionBarDragStart.x;
+      const dy = e.clientY - actionBarDragStart.y;
+      setActionBarOffset(prev => ({
+        x: prev.x + dx,
+        y: prev.y + dy
+      }));
+      setActionBarDragStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
+    if (isCanvasDragging) {
+      const dx = e.clientX - canvasDragStart.x;
+      const dy = e.clientY - canvasDragStart.y;
+
+      // Move viewport center in opposite direction to simulate panning
+      setViewport(prev => ({
+        ...prev,
+        centerX: prev.centerX - dx / prev.zoom,
+        centerY: prev.centerY - dy / prev.zoom
+      }));
+      setCanvasDragStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
+    // Handle hovering tooltips automatically via CSS; no JS needed
+    if (isDragging) {
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const draggedTodo = todos.find(todo => todo.id === draggedItemId);
+      if (!draggedTodo) return;
+
+      // Convert screen movement to world movement
+      const dx = (e.clientX - dragStart.x) / viewport.zoom;
+      const dy = (e.clientY - dragStart.y) / viewport.zoom;
+
+      const newWorldX = draggedTodo.worldX + dx;
+      const newWorldY = draggedTodo.worldY + dy;
+
+      setTodos(prevTodos =>
+        prevTodos.map(todo =>
+          todo.id === draggedItemId
+            ? { ...todo, worldX: newWorldX, worldY: newWorldY }
+            : todo
+        )
+      );
+      movedRef.current = true;
+      setDragStart({ x: e.clientX, y: e.clientY });
+    } else if (isResizing) {
+      const draggedTodo = todos.find(todo => todo.id === draggedItemId);
+      if (!draggedTodo) return;
+
+      const newSize = draggedTodo.size + ( (e.clientX - dragStart.x) * 1.3 ) / viewport.zoom; // more responsive, zoom-aware
+
+      setTodos(prevTodos =>
+        prevTodos.map(todo =>
+          todo.id === draggedItemId
+            ? { ...todo, size: Math.max(100, Math.min(360, newSize)) } // Clamp size
+            : todo
+        )
+      );
+      setDragStart({ x: e.clientX, y: e.clientY });
+    }
+    if (leftPanelResizing.current) {
+      const dx = e.clientX - leftPanelResizeStart.current.x;
+      setLeftPanelWidth(Math.max(280, Math.min(600, leftPanelResizeStart.current.width + dx)));
+      return;
+    }
+    leftPanelResizing.current = false;
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+    setDraggedItemId(null);
+    setIsPanelDragging(false);
+    setDraggingPanel(null);
+    setIsCanvasDragging(false);
+    setIsDraggingActionBar(false);
+    leftPanelResizing.current = false;
+  };
+
+  // Touch handlers for mobile drag/resize and canvas pan
+  const getTouchPoint = (e) => {
+    const t = e.touches && e.touches[0] ? e.touches[0] : (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0] : null);
+    return t ? { x: t.clientX, y: t.clientY } : { x: 0, y: 0 };
+  };
+
+  const handleTouchStartBubble = (e, todoId) => {
+    e.stopPropagation();
+    const point = getTouchPoint(e);
+    const el = e.target;
+    const isResizeHandle = el.classList && el.classList.contains('resize-handle');
+    if (isResizeHandle) {
+      setIsResizing(true);
+      setIsDragging(false);
+    } else {
+      setIsDragging(true);
+      setIsResizing(false);
+    }
+    setDraggedItemId(todoId);
+    movedRef.current = false;
+    setDragStart({ x: point.x, y: point.y });
+  };
+
+  const handleTouchMoveWindow = (e) => {
+    if (isPanelDragging || leftPanelResizing.current) return; // ignore while panel resize/drag
+    const point = getTouchPoint(e);
+    if (isCanvasDragging) {
+      const dx = point.x - canvasDragStart.x;
+      const dy = point.y - canvasDragStart.y;
+      setViewport(prev => ({ ...prev, centerX: prev.centerX - dx / prev.zoom, centerY: prev.centerY - dy / prev.zoom }));
+      setCanvasDragStart({ x: point.x, y: point.y });
+      return;
+    }
+    if (isDragging) {
+      e.preventDefault();
+      const draggedTodo = todos.find(todo => todo.id === draggedItemId);
+      if (!draggedTodo) return;
+      const dx = (point.x - dragStart.x) / viewport.zoom;
+      const dy = (point.y - dragStart.y) / viewport.zoom;
+      const newWorldX = draggedTodo.worldX + dx;
+      const newWorldY = draggedTodo.worldY + dy;
+      setTodos(prev => prev.map(t => t.id === draggedItemId ? { ...t, worldX: newWorldX, worldY: newWorldY } : t));
+      movedRef.current = true;
+      setDragStart({ x: point.x, y: point.y });
+    } else if (isResizing) {
+      e.preventDefault();
+      const draggedTodo = todos.find(todo => todo.id === draggedItemId);
+      if (!draggedTodo) return;
+      const newSize = draggedTodo.size + ((point.x - dragStart.x) * 1.3) / viewport.zoom;
+      setTodos(prev => prev.map(t => t.id === draggedItemId ? { ...t, size: Math.max(100, Math.min(360, newSize)) } : t));
+      setDragStart({ x: point.x, y: point.y });
+    }
+  };
+
+  const handleTouchEndWindow = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+    setDraggedItemId(null);
+    setIsCanvasDragging(false);
+  };
+
+  useEffect(() => {
+    const tm = (e) => handleTouchMoveWindow(e);
+    const te = () => handleTouchEndWindow();
+    window.addEventListener('touchmove', tm, { passive: false });
+    window.addEventListener('touchend', te);
+    window.addEventListener('touchcancel', te);
+    return () => {
+      window.removeEventListener('touchmove', tm);
+      window.removeEventListener('touchend', te);
+      window.removeEventListener('touchcancel', te);
+    };
+  }, [isDragging, isResizing, isCanvasDragging, draggedItemId, dragStart, viewport.zoom]);
+
+  // Reset viewport to center of world
+  // Full picture: show 00:00–24:00 at zoom=1; recentre to 12:00 so full day is visible
+  const resetCanvasToFullPicture = () => {
+    const now = new Date();
+    const noonY = timeToWorldCoords(12, now).worldY;
+    // At zoom=0.5, with our 12h baseline, the full 24h fits vertically
+    setViewport(v => ({ ...v, centerY: noonY, zoom: 0.5 }));
+  };
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, isResizing, isPanelDragging]);
+
+  // Handle adding imported tasks
+  const handleAddImportedTasks = () => {
+    if (!importText.trim()) return;
+
+    const parsed = parseTodosFromText(importText);
+    const uncompleted = parsed.filter(it => !it.completed);
+    const completed = parsed.filter(it => it.completed);
+
+    // Add uncompleted tasks to active todos
+    if (uncompleted.length > 0) {
+      const now = new Date();
+      const currentHour = now.getHours() + (now.getMinutes() / 60);
+      const defaultGroup = getDefaultGroup();
+
+      const created = uncompleted.map((it, index) => {
+        // Use stored coordinates if available (from tabular import), otherwise use balanced positioning
+        const hasStoredPosition = it.centerX !== undefined && it.centerY !== undefined;
+
+        return {
+          id: Date.now() + index,
+          text: it.text,
+          elapsedTime: 0,
+          isEditing: false,
+          size: hasStoredPosition ? (it.radius || 75) * 2 : 150, // Convert radius back to size
+          color: getGroupColor(it.group || defaultGroup),
+          group: it.group || defaultGroup,
+          createdTime: now.toISOString(),
+          createdHour: currentHour,
+          createdDate: now.toISOString().split('T')[0],
+          // Enhanced metadata
+          started: it.started,
+          ended: it.ended,
+          total: it.total || 0,
+          centerX: hasStoredPosition ? it.centerX : undefined,
+          centerY: hasStoredPosition ? it.centerY : undefined,
+          radius: it.radius || 75,
+          // Use stored world coordinates if available
+          worldX: hasStoredPosition ? it.centerX : undefined,
+          worldY: hasStoredPosition ? it.centerY : undefined,
+        };
+      });
+
+      // Only use balanced positioning for items without stored coordinates
+      const itemsNeedingPositioning = created.filter(item => item.worldX === undefined);
+      const itemsWithPositions = created.filter(item => item.worldX !== undefined);
+
+      if (itemsNeedingPositioning.length > 0) {
+        const positioned = assignBalancedPositions(itemsNeedingPositioning, todos.length);
+        setTodos(prev => [...prev, ...positioned, ...itemsWithPositions]);
+      } else {
+        setTodos(prev => [...prev, ...itemsWithPositions]);
+      }
+    }
+
+    // Add completed tasks to finished list if option is enabled
+    if (addCheckedToFinished && completed.length > 0) {
+      const now = new Date();
+      const timeStr = now.toLocaleString();
+      const defaultGroup = getDefaultGroup();
+
+      const newDoneItems = completed.map((it, index) => ({
+        id: Date.now() + 1000 + index, // Ensure unique IDs
+        text: it.text,
+        originalId: null,
+        group: it.group || defaultGroup,
+        color: getGroupColor(it.group || defaultGroup),
+        completedAt: now.toISOString(),
+        startedAt: it.started || timeStr,
+        endedAt: it.ended || timeStr,
+        duration: it.total || "00:00:00",
+        elapsedTime: it.total || 0,
+        // Enhanced metadata
+        started: it.started || timeStr,
+        ended: it.ended || timeStr,
+        total: it.total || 0,
+        centerX: it.centerX || 0,
+        centerY: it.centerY || 0,
+        radius: it.radius || 75,
+        status: 'finished'
+      }));
+
+      setDoneItems(prev => [...prev, ...newDoneItems]);
+    }
+    // Hide intro overlay when tasks are imported
+    setTimeout(() => {
+      if (todos.length > 0) return;
+      setTodos(prev => prev); // trigger rerender; overlay is conditional on length
+    }, 0);
+  };
+
+  // Clear import text
+  const clearImportText = () => {
+    setImportText('');
+  };
+
+  // State for markdown preview expansion and export format (moved up to ensure correct ordering)
+  const [markdownPreviewExpanded, setMarkdownPreviewExpanded] = useState(false);
+  const [exportFormat, setExportFormat] = useState('simple'); // 'simple' or 'full'
+
+  // Generate markdown for both todo and done lists with dual format support (synchronous)
+  const { todoMarkdown, doneMarkdown } = React.useMemo(() => {
+    if (exportFormat === 'simple') {
+      // Simple format: clean checkbox markdown
+      const todoMarkdown = todos.map(todo => `- [ ] ${todo.text}`).join('\n');
+      const doneMarkdown = doneItems.map(item => {
+        if (typeof item === 'string') {
+          return `- [x] ${item}`;
+        }
+        return `- [x] ${item.text}`;
+      }).join('\n');
+      return { todoMarkdown, doneMarkdown };
+    } else {
+      // Full format: table with all metadata
+      const header = '| Task | Status | Started | Ended | Total | Group | X | Y | Radius |\n|------|--------|---------|-------|-------|-------|---|---|--------|\n';
+      const todoRows = todos.map(todo =>
+        `| ${todo.text} | active | ${todo.started || 'N/A'} | ${todo.ended || 'N/A'} | ${formatTime(todo.total || 0)} | ${todo.group || 'Ungrouped'} | ${Math.round(todo.centerX || todo.worldX || 0)} | ${Math.round(todo.centerY || todo.worldY || 0)} | ${todo.radius || 75} |`
+      ).join('\n');
+      const doneRows = doneItems.map(item => {
+        if (typeof item === 'string') {
+          return `| ${item} | finished | N/A | N/A | 00:00:00 | Ungrouped | 0 | 0 | 75 |`;
+        }
+        return `| ${item.text} | finished | ${item.started || item.startedAt || 'N/A'} | ${item.ended || item.endedAt || 'N/A'} | ${formatTime(item.total || item.elapsedTime || 0)} | ${item.group || 'Ungrouped'} | ${Math.round(item.centerX || 0)} | ${Math.round(item.centerY || 0)} | ${item.radius || 75} |`;
+      }).join('\n');
+      return {
+        todoMarkdown: todoRows ? header + todoRows : '',
+        doneMarkdown: doneRows ? header + doneRows : ''
+      };
+    }
+  }, [exportFormat, todos, doneItems]);
+
+  // Remove re-render key hack; recompute combinedMarkdown synchronously below
+
+  // Get current date in a readable format
+  const currentDateFormatted = new Date().toLocaleDateString('en-US', {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+
+  // Combined markdown for the preview and copy functionality (instant updates)
+  const combinedMarkdown = `# Todo List (${currentDateFormatted})\n\n## Active\n${todoMarkdown}\n\n## Completed\n${doneMarkdown}`;
+
+  const formatClock = (ts) => new Date(ts).toLocaleTimeString();
+  const formatDate = (ts) => new Date(ts).toLocaleDateString();
+  const sinceLastStart = lastTaskStartAt ? formatTime(currentTime - lastTaskStartAt) : formatTime(0);
+  // Only count while actively focused - use currentTime for sync
+  const sinceLastFocus = (activeTodoId && lastFocusStartAt)
+    ? formatTime(currentTime - lastFocusStartAt)
+    : formatTime(0);
+  const totalFocusTime = formatTime(totalFocusMs + ((activeTodoId && lastFocusStartAt) ? (currentTime - lastFocusStartAt) : 0));
+
+  // Function to restore a completed task back to active
+  const restoreTask = (doneItemId) => {
+    const doneItem = doneItems.find(item => item.id === doneItemId);
+    if (!doneItem) return;
+
+    // Create new active todo from the done item (preserve size and position)
+    const restoredTodo = {
+      id: Date.now(), // New ID to avoid conflicts
+      text: doneItem.text,
+      elapsedTime: doneItem.elapsedTime || 0,
+      isEditing: false,
+      size: (doneItem.radius ? doneItem.radius * 2 : 150),
+      worldX: (doneItem.centerX !== undefined ? doneItem.centerX : (doneItem.worldX || (Math.random() * WORLD_WIDTH * 0.8 + WORLD_WIDTH * 0.1))),
+      worldY: (doneItem.centerY !== undefined ? doneItem.centerY : (doneItem.worldY || (Math.random() * WORLD_HEIGHT * 0.8 + WORLD_HEIGHT * 0.1))),
+      color: doneItem.color || getGroupColor(doneItem.group || getDefaultGroup()),
+      group: doneItem.group || getDefaultGroup(),
+      createdTime: new Date().toISOString(),
+      createdHour: new Date().getHours() + (new Date().getMinutes() / 60),
+      createdDate: new Date().toISOString().split('T')[0],
+      // Keep enhanced metadata for continued tracking
+      started: doneItem.started || null,
+      ended: null,
+      total: doneItem.total || doneItem.elapsedTime || 0,
+      centerX: (doneItem.centerX !== undefined ? doneItem.centerX : undefined),
+      centerY: (doneItem.centerY !== undefined ? doneItem.centerY : undefined),
+      radius: doneItem.radius || (doneItem.size ? doneItem.size / 2 : 75),
+      status: 'active'
+    };
+
+    setTodos(prev => [...prev, restoredTodo]);
+    setDoneItems(prev => prev.filter(item => item.id !== doneItemId));
+  };
+
+  // State for draggable action bar with relative positioning
+  const [actionBarOffset, setActionBarOffset] = useState(() => {
+    try {
+      const saved = localStorage.getItem('actionBarOffset');
+      return saved ? JSON.parse(saved) : { x: 80, y: -20 };
+    } catch {
+      return { x: 80, y: -20 };
+    }
+  });
+  const [isDraggingActionBar, setIsDraggingActionBar] = useState(false);
+  const [actionBarDragStart, setActionBarDragStart] = useState({ x: 0, y: 0 });
+
+  // State for bubble animations
+  const [animatingBubbles, setAnimatingBubbles] = useState(new Set());
+  const [bubbleAnimations, setBubbleAnimations] = useState(new Map());
+
+  // Animation helper functions
+  const triggerBubbleAnimation = (todoId, animationType, callback) => {
+    setAnimatingBubbles(prev => new Set(prev).add(todoId));
+    setBubbleAnimations(prev => new Map(prev).set(todoId, animationType));
+
+    // Remove animation after completion and execute callback
+    setTimeout(() => {
+      setAnimatingBubbles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(todoId);
+        return newSet;
+      });
+      setBubbleAnimations(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(todoId);
+        return newMap;
+      });
+      if (callback) callback();
+    }, animationType === 'delete' ? 500 : 700); // Match our enhanced animation durations
+  };
+
+  // Helper function to determine if bubble is outside today's date range
+  const isBubbleOutsideToday = (worldX) => {
+    // Today spans from worldX 0 to PIXELS_PER_DAY (800)
+    // Bubbles outside this range should have reduced opacity
+    return worldX < 0 || worldX >= PIXELS_PER_DAY;
+  };
+
+  // Save action bar offset to localStorage
+  useEffect(() => {
+    localStorage.setItem('actionBarOffset', JSON.stringify(actionBarOffset));
+  }, [actionBarOffset]);
+
+  // Helper function to get background color class for a group
+  const getBgColorClass = (groupName) => {
+    const colorClass = getGroupColor(groupName);
+    // Convert bg-color-600 to bg-color-700 for darker shade
+    return colorClass.replace('-600', '-700');
+  };
+
+  // Helper function to get text color class for a group
+  const getTextColorClass = (groupName) => {
+    const colorClass = getGroupColor(groupName);
+    // Convert bg-color-600 to text-color-300 for lighter text
+    return colorClass.replace('bg-', 'text-').replace('-600', '-300');
+  };
+
+  // Get the current focus task's group color
+  const getCurrentFocusColor = () => {
+    const focusedTask = selectedTodoId
+      ? todos.find(t => t.id === selectedTodoId)
+      : activeTodoId
+        ? todos.find(t => t.id === activeTodoId)
+        : null;
+
+    if (!focusedTask) return 'bg-gray-700'; // Default color
+
+    return getBgColorClass(focusedTask.group || 'Ungrouped');
+  };
+
+  return (
+    <div ref={rootRef} className="relative h-screen font-sans bg-gray-900 text-gray-100 p-4 lg:p-8">
+
+      {/* Mobile slide tabs */}
+      {isMobile && (
+        <>
+          <div className="fixed left-2 top-1/2 -translate-y-1/2 z-50">
+            <div className="bg-gray-900/80 border border-gray-700 rounded-full shadow-lg p-1 flex items-center">
+              <button
+                onClick={() => setLeftSlideOpen(!leftSlideOpen)}
+                className="px-3 py-2 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-500 focus:outline-none"
+                data-mobile-tab="left"
+                aria-label="Open tasks panel"
+              >Tasks</button>
+            </div>
+          </div>
+          <div className="fixed right-2 top-1/2 -translate-y-1/2 z-50">
+            <div className="bg-gray-900/80 border border-gray-700 rounded-full shadow-lg p-1 flex items-center">
+              <button
+                onClick={() => setRightSlideOpen(!rightSlideOpen)}
+                className="px-3 py-2 text-xs font-medium rounded-full bg-amber-600 text-white hover:bg-amber-500 focus:outline-none"
+                data-mobile-tab="right"
+                aria-label="Open timer panel"
+              >Timer</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Group Legend top bar */}
+      <div className="fixed top-3 left-1/2 -translate-x-1/2 z-30 bg-gray-900/80 border border-gray-700 rounded-md px-2 py-1 text-xs text-gray-300 flex flex-wrap gap-3 shadow-md">
+        {groups.map(g => (
+          <div key={`legend-${g}`} className="flex items-center gap-1">
+            <span className={`${getGroupColor(g)} inline-block w-3 h-3 rounded-full border border-white/30`} />
+            <span>{g}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Left panel: Tasks (fixed, resizable width only) */}
+      {!isMobile && (
+      <div
+        className="absolute p-4 rounded-2xl bg-gray-800 shadow-xl overflow-y-auto"
+        style={{ left: 16, top: 16, zIndex: 100, width: leftPanelWidth, cursor: 'default' }}
+      >
+        <div className="flex items-center justify-between mb-2 select-none">
+          <h2 className="text-xl font-bold">Your Tasks</h2>
+          <div className="text-xs text-gray-400 flex items-center gap-1">
+            {/* Left panel resize handle */}
+            <div
+              className="absolute top-0 right-0 h-full w-2 cursor-ew-resize"
+              onMouseDown={(e)=>{ e.stopPropagation(); leftPanelResizing.current = true; leftPanelResizeStart.current = { x: e.clientX, width: leftPanelWidth }; }}
+              title="Drag to resize"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="bg-gray-700 rounded-xl p-3 text-center">
+            <div className="text-gray-400">Active</div>
+            <div className="text-2xl font-bold">{todos.length}</div>
+          </div>
+          <div className="bg-gray-700 rounded-xl p-3 text-center">
+            <div className="text-gray-400">Completed</div>
+            <div className="text-2xl font-bold">{doneItems.length}</div>
+          </div>
+        </div>
+
+        {/* 1. Groups Management */}
+        <div className="p-4 rounded-xl bg-gray-700 text-gray-300 mt-2">
+          <div
+            className="text-gray-400 text-sm mb-2 cursor-pointer flex items-center justify-between"
+            onClick={() => setGroupsExpanded(!groupsExpanded)}
+          >
+            <span className="cursor-pointer">Groups</span>
+            <span className="text-xs">{groupsExpanded ? '▼' : '▶'}</span>
+          </div>
+          {groupsExpanded && (
+            <>
+              <div className="space-y-2 mb-3">
+                {groups.map((group, index) => (
+                  <div key={group} className={`flex items-center justify-between ${getBgColorClass(group)} p-2 rounded-md text-sm`}>
+                    <span className="flex-1">{group}</span>
+                    <div className="flex items-center gap-2">
+                      {/* Color dropdown per group (replaces chips) */}
+                      <select
+                        value={groupColors[group] || getGroupColor(group)}
+                        onChange={(e)=> setGroupColors(prev => ({ ...prev, [group]: e.target.value }))}
+                        className="p-1 rounded bg-gray-900 text-gray-100 text-xs border border-gray-600"
+                        title="Choose group colour"
+                      >
+                        {COLORS.map(c => (
+                          <option key={`${group}-${c}`} value={c}>{COLOR_LABELS[c] || c}</option>
+                        ))}
+                      </select>
+
+                      <button
+                        onClick={() => {
+                          if (groups.length > 1) {
+                            const newGroups = groups.filter(g => g !== group);
+                            setGroups(newGroups);
+                            if (selectedGroup === group) setSelectedGroup(newGroups[0]);
+                            // Update todos that had this group to the first remaining group
+                            setTodos(prev => prev.map(t => t.group === group ? {...t, group: newGroups[0], color: getGroupColor(newGroups[0])} : t));
+                          }
+                        }}
+                        className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+                        title="Delete group"
+                        disabled={groups.length <= 1}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newGroup}
+                  onChange={(e) => setNewGroup(e.target.value)}
+                  placeholder="New group name"
+                  className="flex-1 bg-gray-800 p-2 rounded-md focus:outline-none text-sm"
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter' && newGroup.trim() && !groups.includes(newGroup.trim())) {
+                      setGroups([...groups, newGroup.trim()]);
+                      setNewGroup('');
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    if (newGroup.trim() && !groups.includes(newGroup.trim())) {
+                      setGroups([...groups, newGroup.trim()]);
+                      setNewGroup('');
+                    }
+                  }}
+                  className="px-3 py-2 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                  Add
+                </button>
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-600">
+                <label className="flex items-center gap-2 text-xs text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={alwaysDefaultToUngrouped}
+                    onChange={(e) => setAlwaysDefaultToUngrouped(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  Always default new tasks to Ungrouped
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* 2. Import area supporting multiple formats, foldable */}
+        <div className="p-4 rounded-xl bg-gray-700 text-gray-300 mt-2">
+          <div className="text-gray-400 text-sm mb-1 flex items-center justify-between cursor-pointer" onClick={() => setImportExpanded(!importExpanded)}>
+            <div className="flex items-center gap-2 cursor-pointer">
+              <span>Import tasks</span>
+              <span className="relative group inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-800/80 text-gray-200 text-xs cursor-default select-none">?
+                <span className="invisible opacity-0 group-hover:visible group-hover:opacity-100 transition-opacity duration-150 absolute left-5 top-1/2 -translate-y-1/2 w-48 p-2 rounded bg-gray-900 text-gray-200 text-xs shadow-lg border border-gray-700" style={{zIndex: 99999, position: 'fixed'}}>
+                  Supports: '- [ ] task', '- [x] task', plain lines, bullets (•, -, *), Apple Notes (☐/☑), and numbered lists.
+                </span>
+              </span>
+            </div>
+            <span className="text-xs">{importExpanded ? '▼' : '▶'}</span>
+          </div>
+          {importExpanded && (
+            <>
+              <textarea
+                value={importText}
+                onChange={(e)=>setImportText(e.target.value)}
+                className="w-full h-16 bg-gray-800/60 rounded-md p-2 resize-none focus:outline-none"
+                placeholder={"Paste todos here"}
+                onContextMenu={(e)=>e.stopPropagation()}
+              />
+              <div className="flex items-center justify-between mt-2">
+                <label className="flex items-center gap-2 text-xs text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={addCheckedToFinished}
+                    onChange={(e) => setAddCheckedToFinished(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  Add checked to Finished
+                </label>
+                <div className="flex gap-2 w-full md:w-auto justify-center md:justify-start">
+                  <button
+                    onClick={() => {
+                      handleAddImportedTasks();
+                      setImportText(''); // Auto-clear after adding
+                    }}
+                    className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={clearImportText}
+                    className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200 border border-gray-600 rounded hover:border-gray-500"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* 3. Active tasks (rendered checklist) */}
+        <div className="flex-grow p-4 rounded-xl bg-gray-700 text-gray-300 overflow-y-auto mt-2 space-y-3">
+          <div
+            className="text-gray-400 text-sm cursor-pointer flex items-center justify-between"
+            onClick={() => setUnfinishedTasksExpanded(!unfinishedTasksExpanded)}
+          >
+            <span className="cursor-pointer">Active tasks</span>
+            <span className="text-xs">({todos.length}) {unfinishedTasksExpanded ? '▼' : '▶'}</span>
+          </div>
+          {unfinishedTasksExpanded && (
+            <div className="space-y-2">
+              {todos.length === 0 ? (
+                <div className="text-gray-400">No active tasks</div>
+              ) : (
+                todos.map(t => (
+                  <div key={t.id} className="flex items-start gap-2 select-text group">
+                    <input
+                      type="checkbox"
+                      checked={false}
+                      onChange={() => finishTodoById(t.id)}
+                      className="mt-1 accent-blue-600 cursor-pointer"
+                      title="Mark complete"
+                    />
+                    {/* Group dropdown per task */}
+                    <select
+                      value={t.group}
+                      onChange={(e) => setTodos(prev => prev.map(td => td.id===t.id? { ...td, group: e.target.value, color: getGroupColor(e.target.value) }: td))}
+                      className="mr-2 p-1 rounded bg-gray-800 text-gray-100 text-xs"
+                      title="Change group"
+                    >
+                      {groups.map(g => (
+                        <option key={`${t.id}-${g}`} value={g}>{g}</option>
+                      ))}
+                    </select>
+                    <span className="whitespace-pre-wrap break-words flex-1 cursor-pointer" onClick={() => {
+                      // Locate, select, and centre the bubble for this task
+                      const todo = todos.find(x => x.id === t.id);
+                      if (!todo) return;
+                      selectTodo(t.id);
+                      // Centre viewport on bubble
+                      setViewport(prev => ({
+                        ...prev,
+                        centerX: todo.worldX || 0,
+                        centerY: todo.worldY || 0
+                      }));
+                    }}>{t.text}</span>
+                    <button
+                      onClick={() => removeTodoById(t.id)}
+                      className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-200"
+                      title="Remove from list"
+                    >Remove</button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 4. Finished tasks with same UI as active tasks */}
+        <div className="flex-grow p-4 rounded-xl bg-gray-700 text-gray-300 overflow-y-auto mt-2 space-y-3">
+          <div
+            className="text-gray-400 text-sm cursor-pointer flex items-center justify-between"
+            onClick={() => setFinishedTasksExpanded(!finishedTasksExpanded)}
+          >
+            <span className="cursor-pointer">Finished tasks</span>
+            <span className="text-xs">({doneItems.length}) {finishedTasksExpanded ? '▼' : '▶'}</span>
+          </div>
+          {finishedTasksExpanded && (
+            <div className="space-y-2">
+              {doneItems.length === 0 ? (
+                <div className="text-gray-400">No finished tasks</div>
+              ) : (
+                doneItems.map(item => (
+                  <div key={item.id} className="flex items-start gap-2 select-text group">
+                    <input
+                      type="checkbox"
+                      checked={true}
+                      onChange={() => restoreTask(item.id)}
+                      className="mt-1 accent-blue-600 cursor-pointer"
+                      title="Mark incomplete (restore to active tasks)"
+                    />
+                    {/* Group indicator for finished task */}
+                    <div
+                      className={`${item.color || 'bg-blue-600'} w-5 h-5 rounded-full flex-shrink-0`}
+                      title={`Group: ${item.group}`}
+                    />
+                    <span className="whitespace-pre-wrap break-words flex-1 line-through text-gray-400">
+                      {item.text}
+                      <span className="text-xs block text-gray-500 mt-0.5">
+                        {item.duration} • {item.group}
+                      </span>
+                    </span>
+                    <button
+                      onClick={() => setDoneItems(prev => prev.filter(x => x.id !== item.id))}
+                      className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-200 ml-2"
+                      title="Remove from finished"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 5. Copy as markdown button and preview */}
+        <div className="mt-2">
+          <div className="mb-3">
+            <div className="text-gray-400 text-sm mb-2">Export Format</div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setExportFormat('simple')}
+                className={`px-3 py-1 text-xs rounded ${exportFormat === 'simple' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'}`}
+              >Simple</button>
+              <button
+                onClick={() => setExportFormat('full')}
+                className={`px-3 py-1 text-xs rounded ${exportFormat === 'full' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'}`}
+              >Full</button>
+            </div>
+          </div>
+          <button onClick={copyTodosMarkdown} className="w-full p-3 bg-blue-600 text-white rounded-xl shadow-md hover:bg-blue-700 transition-colors">Copy all as Markdown</button>
+
+          <div className="mt-2 p-2 rounded-xl bg-gray-700 text-gray-300">
+            <div
+              className="text-gray-400 text-sm cursor-pointer flex items-center justify-between mb-1"
+              onClick={() => setMarkdownPreviewExpanded(!markdownPreviewExpanded)}
+            >
+              <span className="cursor-pointer">Markdown preview</span>
+              <span className="text-xs">{markdownPreviewExpanded ? '▼' : '▶'}</span>
+            </div>
+
+            {markdownPreviewExpanded && (
+              <textarea
+                value={combinedMarkdown}
+                readOnly
+                className="w-full h-24 bg-transparent resize-none focus:outline-none text-xs"
+                placeholder="Markdown preview will appear here..."
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Docked timers inside left panel (default is float) */}
+        {rightPanelDocked && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between mb-2 select-none">
+              <h2
+                className="text-xl font-bold cursor-pointer flex items-center gap-2"
+                onClick={() => setTimersExpanded(!timersExpanded)}
+              >
+                Timers
+                <span className="text-sm">{timersExpanded ? '▼' : '▶'}</span>
+              </h2>
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <button
+                  onClick={(e)=>{
+                    e.stopPropagation();
+                    setRightPanelDocked(false);
+                    // Center the timer panel within the bubble canvas container
+                    const rootRect = rootRef.current?.getBoundingClientRect();
+                    const canvasRect = containerRef.current?.getBoundingClientRect();
+                    const panelWidth = 320;
+                    const panelH = 400; // approximate height for clamping
+                    const pad = 8;
+                    if (rootRect && canvasRect) {
+                      const canvasLeft = canvasRect.left - rootRect.left;
+                      const canvasTop = canvasRect.top - rootRect.top;
+                      const canvasW = canvasRect.width;
+                      const canvasH = canvasRect.height;
+                      let x = canvasLeft + (canvasW - panelWidth) / 2;
+                      let y = canvasTop + (canvasH - panelH) / 2;
+                      // Clamp to keep fully visible within canvas
+                      x = Math.max(canvasLeft + pad, Math.min(x, canvasLeft + canvasW - panelWidth - pad));
+                      y = Math.max(canvasTop + pad, Math.min(y, canvasTop + canvasH - panelH - pad));
+                      console.log('[TimerPosition center docked->drag]', { rootRect, canvasRect, panelWidth, panelH, x, y });
+                      setRightPanelPos({ x, y });
+                    } else {
+                      // Fallback to center of viewport
+                      const x = Math.max(8, (window.innerWidth - panelWidth) / 2);
+                      const y = Math.max(8, (window.innerHeight - panelH) / 2);
+                      console.log('[TimerPosition fallback center]', { x, y });
+                      setRightPanelPos({ x, y });
+                    }
+                  }}
+                  className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white"
+                  title="Switch to float mode"
+                >float</button>
+              </div>
+            </div>
+            {timersExpanded && (
+              <>
+                <div className="text-center text-gray-400 text-sm mb-3">
+                  Today is {formatDate(currentTime)}
+                </div>
+
+                {/* Current Focus moved from left panel */}
+                <div className={`p-3 rounded-xl ${getCurrentFocusColor()} text-gray-300 mb-3`}>
+                  <div className="text-gray-200 text-sm mb-2">Current Focus</div>
+                  <input
+                    ref={currentFocusInputRef}
+                    type="text"
+                    value={
+                      selectedTodoId ? (todos.find(t => t.id === selectedTodoId)?.text || '') :
+                      activeTodoId ? (todos.find(t => t.id === activeTodoId)?.text || '') : ''
+                    }
+                    onChange={(e)=>{
+                      const targetId = selectedTodoId || activeTodoId;
+                      if (!targetId) return;
+                      setTodos(ts=>ts.map(t=>t.id===targetId?{...t,text:e.target.value}:t));
+                    }}
+                    placeholder="Click a bubble to focus"
+                    className="w-full bg-gray-800 p-2 rounded-md focus:outline-none text-sm"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="bg-gray-700 rounded-xl p-4">
+                    <div className="text-gray-400 text-sm">Local time</div>
+                    <div className="text-2xl font-bold mt-1">{formatClock(currentTime)}</div>
+                  </div>
+                  <div className="bg-gray-700 rounded-xl p-4">
+                    <div className="text-gray-400 text-sm">Since last focus</div>
+                    <div className="text-2xl font-bold mt-1">{sinceLastFocus}</div>
+                  </div>
+                  <div className="bg-gray-700 rounded-xl p-4">
+                    <div className="text-gray-400 text-sm">Total focus time</div>
+                    <div className="text-2xl font-bold mt-1">{totalFocusTime}</div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+      </div>
+      )}
+
+      {/* Mobile slide panels */}
+      {isMobile && leftSlideOpen && (
+        <div className="fixed inset-0 z-40 bg-black bg-opacity-50" onClick={() => setLeftSlideOpen(false)}>
+          <div className="absolute left-0 top-0 h-full w-80 bg-gray-800 p-4 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2 select-none">
+              <h2 className="text-xl font-bold">Your Tasks</h2>
+              <button onClick={() => setLeftSlideOpen(false)} className="text-xs text-gray-400">Close</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-sm mb-2">
+              <div className="bg-gray-700 rounded-xl p-3 text-center">
+                <div className="text-gray-400">Active</div>
+                <div className="text-2xl font-bold">{todos.length}</div>
+              </div>
+              <div className="bg-gray-700 rounded-xl p-3 text-center">
+                <div className="text-gray-400">Completed</div>
+                <div className="text-2xl font-bold">{doneItems.length}</div>
+              </div>
+            </div>
+
+            {/* Groups Management */}
+            <div className="p-3 rounded-xl bg-gray-700 text-gray-300 mt-2">
+              <div className="text-gray-400 text-sm mb-2 cursor-pointer flex items-center justify-between" onClick={() => setGroupsExpanded(!groupsExpanded)}>
+                <span>Groups</span>
+                <span className="text-xs">{groupsExpanded ? '▼' : '▶'}</span>
+              </div>
+              {groupsExpanded && (
+                <>
+                  <div className="space-y-2 mb-3">
+                    {groups.map((group) => (
+                      <div key={group} className={`flex items-center justify-between ${getBgColorClass(group)} p-2 rounded-md text-sm`}>
+                        <span className="flex-1">{group}</span>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={groupColors[group] || getGroupColor(group)}
+                            onChange={(e)=> setGroupColors(prev => ({ ...prev, [group]: e.target.value }))}
+                            className="p-1 rounded bg-gray-900 text-gray-100 text-xs border border-gray-600"
+                            title="Choose group colour"
+                          >
+                            {COLORS.map(c => (
+                              <option key={`${group}-${c}`} value={c}>{COLOR_LABELS[c] || c}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => {
+                              if (groups.length > 1) {
+                                const newGroups = groups.filter(g => g !== group);
+                                setGroups(newGroups);
+                                if (selectedGroup === group) setSelectedGroup(newGroups[0]);
+                                setTodos(prev => prev.map(t => t.group === group ? {...t, group: newGroups[0], color: getGroupColor(newGroups[0])} : t));
+                              }
+                            }}
+                            className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+                            title="Delete group"
+                            disabled={groups.length <= 1}
+                          >×</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <input type="text" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="New group name" className="flex-1 bg-gray-800 p-2 rounded-md focus:outline-none text-sm" />
+                    <button onClick={() => { if (newGroup.trim() && !groups.includes(newGroup.trim())) { setGroups([...groups, newGroup.trim()]); setNewGroup(''); } }} className="px-3 py-2 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Import area */}
+            <div className="p-3 rounded-xl bg-gray-700 text-gray-300 mt-2">
+              <div className="text-gray-400 text-sm mb-1 flex items-center justify-between cursor-pointer" onClick={() => setImportExpanded(!importExpanded)}>
+                <span>Import tasks</span>
+                <span className="text-xs">{importExpanded ? '▼' : '▶'}</span>
+              </div>
+              {importExpanded && (
+                <>
+                  <textarea value={importText} onChange={(e)=>setImportText(e.target.value)} className="w-full h-16 bg-gray-800/60 rounded-md p-2 resize-none focus:outline-none" placeholder={"Paste todos here"} onContextMenu={(e)=>e.stopPropagation()} />
+                  <div className="flex items-center justify-between mt-2">
+                    <label className="flex items-center gap-2 text-xs text-gray-400">
+                      <input type="checkbox" checked={addCheckedToFinished} onChange={(e) => setAddCheckedToFinished(e.target.checked)} className="accent-blue-600" />
+                      Add checked to Finished
+                    </label>
+                    <div className="flex gap-2">
+                      <button onClick={() => { handleAddImportedTasks(); setImportText(''); }} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
+                      <button onClick={clearImportText} className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200 border border-gray-600 rounded hover:border-gray-500">Clear</button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Active tasks */}
+            <div className="p-3 rounded-xl bg-gray-700 text-gray-300 overflow-y-auto mt-2 space-y-3">
+              <div className="text-gray-400 text-sm cursor-pointer flex items-center justify-between" onClick={() => setUnfinishedTasksExpanded(!unfinishedTasksExpanded)}>
+                <span>Active tasks</span>
+                <span className="text-xs">({todos.length}) {unfinishedTasksExpanded ? '▼' : '▶'}</span>
+              </div>
+              {unfinishedTasksExpanded && (
+                <div className="space-y-2">
+                  {todos.length === 0 ? (
+                    <div className="text-gray-400">No active tasks</div>
+                  ) : (
+                    todos.map(t => (
+                      <div key={t.id} className="flex items-start gap-2 select-text group">
+                        <input type="checkbox" checked={false} onChange={() => finishTodoById(t.id)} className="mt-1 accent-blue-600 cursor-pointer" title="Mark complete" />
+                        <select value={t.group} onChange={(e) => setTodos(prev => prev.map(td => td.id===t.id? { ...td, group: e.target.value, color: getGroupColor(e.target.value) }: td))} className="mr-2 p-1 rounded bg-gray-800 text-gray-100 text-xs" title="Change group">
+                          {groups.map(g => (<option key={`${t.id}-${g}`} value={g}>{g}</option>))}
+                        </select>
+                        <span className="whitespace-pre-wrap break-words flex-1 cursor-pointer" onClick={() => { const todo = todos.find(x => x.id === t.id); if (!todo) return; selectTodo(t.id); setViewport(prev => ({ ...prev, centerX: todo.worldX || 0, centerY: todo.worldY || 0 })); }}>{t.text}</span>
+                        <button onClick={() => removeTodoById(t.id)} className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-200" title="Remove from list">Remove</button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Finished tasks */}
+            <div className="p-3 rounded-xl bg-gray-700 text-gray-300 overflow-y-auto mt-2 space-y-3">
+              <div className="text-gray-400 text-sm cursor-pointer flex items-center justify-between" onClick={() => setFinishedTasksExpanded(!finishedTasksExpanded)}>
+                <span>Finished tasks</span>
+                <span className="text-xs">({doneItems.length}) {finishedTasksExpanded ? '▼' : '▶'}</span>
+              </div>
+              {finishedTasksExpanded && (
+                <div className="space-y-2">
+                  {doneItems.length === 0 ? (
+                    <div className="text-gray-400">No finished tasks</div>
+                  ) : (
+                    doneItems.map(item => (
+                      <div key={item.id} className="flex items-start gap-2 select-text group">
+                        <input type="checkbox" checked={true} onChange={() => restoreTask(item.id)} className="mt-1 accent-blue-600 cursor-pointer" title="Mark incomplete (restore to active tasks)" />
+                        <div className={`${item.color || 'bg-blue-600'} w-5 h-5 rounded-full flex-shrink-0`} title={`Group: ${item.group}`} />
+                        <span className="whitespace-pre-wrap break-words flex-1 line-through text-gray-400">{item.text}<span className="text-xs block text-gray-500 mt-0.5">{item.duration} • {item.group}</span></span>
+                        <button onClick={() => setDoneItems(prev => prev.filter(x => x.id !== item.id))} className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-gray-200 ml-2" title="Remove from finished">Remove</button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Copy as markdown with export format options */}
+            <div className="mt-3">
+              <div className="mb-3">
+                <div className="text-gray-400 text-sm mb-2">Export Format</div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setExportFormat('simple')}
+                    className={`px-3 py-1 text-xs rounded ${exportFormat === 'simple' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'}`}
+                  >Simple</button>
+                  <button
+                    onClick={() => setExportFormat('full')}
+                    className={`px-3 py-1 text-xs rounded ${exportFormat === 'full' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300'}`}
+                  >Full</button>
+                </div>
+              </div>
+              <button onClick={copyTodosMarkdown} className="w-full p-3 bg-blue-600 text-white rounded-xl shadow-md hover:bg-blue-700 transition-colors">Copy all as Markdown</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isMobile && rightSlideOpen && (
+        <div className="fixed inset-0 z-40 bg-black bg-opacity-50" onClick={() => setRightSlideOpen(false)}>
+          <div className="absolute right-0 top-0 h-full w-80 bg-gray-800 p-4 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2 select-none">
+              <h2 className="text-xl font-bold">Timer</h2>
+              <button onClick={() => setRightSlideOpen(false)} className="text-xs text-gray-400">Close</button>
+            </div>
+            <div className="text-center text-gray-400 text-sm mb-3">Today is {formatDate(currentTime)}</div>
+            <div className={`p-3 rounded-xl ${getCurrentFocusColor()} text-gray-300 mb-3`}>
+              <div className="text-gray-200 text-sm mb-2">Current Focus</div>
+              <input
+                ref={currentFocusInputRef}
+                type="text"
+                value={
+                  selectedTodoId ? (todos.find(t => t.id === selectedTodoId)?.text || '') :
+                  activeTodoId ? (todos.find(t => t.id === activeTodoId)?.text || '') : ''
+                }
+                onChange={(e)=>{
+                  const targetId = selectedTodoId || activeTodoId;
+                  if (!targetId) return;
+                  setTodos(ts=>ts.map(t=>t.id===targetId?{...t,text:e.target.value}:t));
+                }}
+                placeholder="Click a bubble to focus"
+                className="w-full bg-gray-800 p-2 rounded-md focus:outline-none text-sm"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="bg-gray-700 rounded-xl p-4">
+                <div className="text-gray-400 text-sm">Local time</div>
+                <div className="text-2xl font-bold mt-1">{formatClock(currentTime)}</div>
+              </div>
+              <div className="bg-gray-700 rounded-xl p-4">
+                <div className="text-gray-400 text-sm">Since last focus</div>
+                <div className="text-2xl font-bold mt-1">{sinceLastFocus}</div>
+              </div>
+              <div className="bg-gray-700 rounded-xl p-4">
+                <div className="text-gray-400 text-sm">Total focus time</div>
+                <div className="text-2xl font-bold mt-1">{totalFocusTime}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Canvas wrapper with external axes */}
+      <div className="relative mb-4 lg:mb-0 lg:mr-4 overflow-hidden" style={{ marginLeft: isMobile ? '0px' : `${leftPanelWidth + 20}px`, height: 'calc(100vh - 140px)' }}>
+        {/* Axes labels as sibling (fixed, not transformed) */}
+        <div className="absolute inset-0 z-10 pointer-events-none">
+          {/* Y-axis labels (hours) - follow world zoom while staying in overlay */}
+          {[0,6,12,18,24].map(hour => {
+            const rect = containerRef.current?.getBoundingClientRect();
+            const { screenY } = worldToScreen(0, hour * PIXELS_PER_HOUR, rect);
+            return (
+              <div key={`ylab-${hour}`} className="absolute left-2 text-xs text-gray-500" style={{ top: `${screenY - 12}px` }}>
+                <span className="bg-gray-900/80 px-1 rounded">{hour}:00</span>
+              </div>
+            );
+          })}
+
+          {/* X-axis labels (Today + next 2 days) - centred per day in world space */}
+          {Array.from({length: 3}, (_, i) => {
+            const rect = containerRef.current?.getBoundingClientRect();
+            const worldX = i * PIXELS_PER_DAY + (PIXELS_PER_DAY / 2);
+            const { screenX } = worldToScreen(worldX, 0, rect);
+            const date = new Date();
+            date.setDate(date.getDate() + i);
+            const isToday = i === 0;
+            const formattedDate = date.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+            return (
+              <div key={`xlab-${i}`} className="absolute bottom-2 text-center" style={{ left: `${screenX}px`, transform: 'translateX(-50%)' }}>
+                <div className={`text-xs px-2 py-1 rounded font-medium flex flex-col items-center ${isToday ? 'text-blue-300 bg-blue-900/90' : 'text-gray-400 bg-gray-800/90'}`}>
+                  <span>{isToday ? 'Today' : formattedDate.split(',')[0]}</span>
+                  <span>{isToday ? formattedDate : formattedDate.split(',')[1]}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* World coordinate grid background - in content layer so it pans/zooms with world */}
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Hour grid lines (every 6 hours) */}
+            {[0, 6, 12, 18, 24].map(hour => {
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              const worldY = hour * PIXELS_PER_HOUR;
+              const { screenY } = worldToScreen(0, worldY, containerRect);
+              return (
+                <div key={hour} className="absolute border-t border-gray-600/30" style={{
+                  top: `${screenY}px`, left: 0, right: 0
+                }} />
+              );
+            })}
+
+            {/* Date divider lines (Today + next 2 days) */}
+            {Array.from({length: 4}, (_, i) => {
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              const worldX = i * PIXELS_PER_DAY;
+              const { screenX } = worldToScreen(worldX, 0, containerRect);
+              return (
+                <div key={`divider-${i}`} className="absolute border-l border-gray-600/30" style={{
+                  left: `${screenX}px`, top: 0, bottom: 0
+                }} />
+              );
+            })}
+          </div>
+
+
+        </div>
+      {/* Bubbles canvas - fixed coordinate system */}
+      <div
+        ref={containerRef}
+        className="absolute inset-0 rounded-2xl bg-gray-800 shadow-xl overflow-hidden lg:mr-4"
+        onMouseDown={(e) => {
+          if (!e.target.closest('.todo-bubble') && !e.target.closest('button') && !isDragging) {
+            setSelectedTodoId(null);
+            if (e.target === containerRef.current || e.target.closest('.canvas-content')) {
+              setIsCanvasDragging(true);
+              setCanvasDragStart({ x: e.clientX, y: e.clientY });
+            }
+          }
+        }}
+        onTouchStart={(e) => {
+          if (!e.target.closest('.todo-bubble') && !e.target.closest('button') && !isDragging) {
+            setSelectedTodoId(null);
+            const t = e.touches && e.touches[0];
+            if (t && (e.target === containerRef.current || e.target.closest('.canvas-content'))) {
+              setIsCanvasDragging(true);
+              setCanvasDragStart({ x: t.clientX, y: t.clientY });
+            }
+          }
+        }}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+      >
+
+        <div ref={zoomControlsRef} className="absolute right-3 top-3 z-20 flex gap-1 bg-gray-900/80 border border-gray-700 rounded-md p-1">
+          <button onClick={() => setViewport(v => ({...v, zoom: Math.min(3.0, +(v.zoom + 0.1).toFixed(2))}))} className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded" title={`Zoom in (current: ${Math.round(viewport.zoom*100)}%)`}>+</button>
+          <button onClick={() => setViewport(v => ({...v, zoom: Math.max(0.1, +(v.zoom - 0.1).toFixed(2))}))} className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded" title={`Zoom out (current: ${Math.round(viewport.zoom*100)}%)`}>-</button>
+          <button onClick={() => setViewport(v => ({...v, zoom: 1}))} className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded" title="Reset zoom to 100%">{`${Math.round(viewport.zoom*100)}%`}</button>
+          <button onClick={resetCanvasToFullPicture} className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded" title="Full picture (00–24)">[ ]</button>
+          <button onClick={() => {
+            // Zoom to current 6-hour block of today (Y only)
+            const now = new Date();
+            const hour = now.getHours() + now.getMinutes()/60;
+            const blockStartHour = Math.floor(hour / 6) * 6;
+            const blockCenterHour = blockStartHour + 3;
+            const { worldY } = timeToWorldCoords(blockCenterHour, now);
+            const targetSpanPx = 6 * PIXELS_PER_HOUR;
+            const rect = containerRef.current?.getBoundingClientRect();
+            const baseZoom = rect ? (0.8 * rect.height) / targetSpanPx : 1.5;
+            setViewport(v => ({ ...v, centerY: worldY, zoom: Math.max(0.1, Math.min(3.0, baseZoom)) }));
+          }} className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded" title="Zoom to current 6h block">6h</button>
+        </div>
+        <div className="absolute inset-0 z-0 canvas-content">
+          {/* World coordinate grid background - in content layer so it pans/zooms with world */}
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Minor hour ticks (every 1 hour, faint) */}
+            {Array.from({length: 25}, (_, h) => h).map(hour => {
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              const worldY = hour * PIXELS_PER_HOUR;
+              const { screenY } = worldToScreen(0, worldY, containerRect);
+              const isMajor = hour % 6 === 0;
+              return (
+                <div key={`h-${hour}`} className={`absolute ${isMajor ? 'border-t border-gray-600/40' : 'border-t border-gray-600/15'}`} style={{ top: `${screenY}px`, left: 0, right: 0 }} />
+              );
+            })}
+
+            {/* Day divider lines (Today + next 2 days) respecting 6:1:1 lanes */}
+            {Array.from({length: 4}, (_, i) => {
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              const worldX = i * PIXELS_PER_DAY;
+              const { screenX } = worldToScreen(worldX, 0, containerRect);
+              return (
+                <div key={`divider-${i}`} className="absolute border-l border-gray-600/30" style={{ left: `${screenX}px`, top: 0, bottom: 0 }} />
+              );
+            })}
+
+            {/* Subtle lane backgrounds for Today (6/8), Tomorrow (1/8), Day after (1/8) */}
+            {(() => {
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return null;
+              const W = rect.width; const H = rect.height;
+              const todayW = W * (6/8); const otherW = W * (1/8);
+              return (
+                <>
+                  <div className="absolute top-0 bottom-0 bg-blue-900/10" style={{ left: 0, width: `${todayW}px` }} />
+                  <div className="absolute top-0 bottom-0 bg-gray-900/10" style={{ left: `${todayW}px`, width: `${otherW}px` }} />
+                  <div className="absolute top-0 bottom-0 bg-gray-900/10" style={{ left: `${todayW + otherW}px`, width: `${otherW}px` }} />
+                </>
+              );
+            })()}
+          </div>
+          <div className="absolute inset-0">
+            {/* Intro screen when no todos */}
+            {todos.length === 0 && !introDismissed && (
+              <div
+                className="absolute inset-0 flex items-center justify-center cursor-pointer"
+                onClick={dismissIntro}
+              >
+                <div className="bg-gray-800/95 backdrop-blur-sm p-8 rounded-2xl shadow-2xl text-center border border-gray-700 hover:bg-gray-700/95 transition-colors">
+                  <h2 className="text-2xl font-bold text-gray-100 mb-4">Quick Start Guide</h2>
+                  <p className="text-gray-400 mb-6">Add a task to get started with Bubbly.</p>
+                  <div className="text-sm text-gray-500">
+                    <p>• Tasks are organized by time (Y-axis) and date (X-axis)</p>
+                    <p>• Click any bubble to select and use the action menu</p>
+                    <p>• All data is stored locally and will be lost if page is refreshed</p>
+                    <p className="mt-2 text-blue-400">Click anywhere to start!</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {todos.map((todo) => {
+              const isSelected = selectedTodoId === todo.id;
+              const containerRect = containerRef.current?.getBoundingClientRect();
+
+              // Convert world coordinates to screen coordinates
+              const screenCoords = worldToScreen(todo.worldX || 0, todo.worldY || 0, containerRect);
+              const bubbleSize = todo.size;
+
+              if (isSelected) {
+                // Expanded bubble with action bar to the right
+                // Make bubble sizes zoom with viewport: scale by viewport.zoom as well
+                const expandedSize = bubbleSize * 1.5 * viewport.zoom; // 50% expansion for selection, zoomed
+                return (
+                  <>
+                    {/* Group label removed as requested */}
+
+                    {/* Expanded bubble */}
+                    <div
+                      key={`${todo.id}-expanded`}
+                      className={`
+                      absolute transition-all duration-150 ease-out todo-bubble
+                      ${activeTodoId === todo.id ? 'bg-green-600' : (todo.color || 'bg-blue-600')} text-white
+                      rounded-full shadow-lg cursor-move select-none
+                      flex flex-col items-center justify-center text-center text-[calc(0.72rem_*_var(--z))] md:text-[calc(0.8rem_*_var(--z))]
+                      ring-4 ${ringClassFor(getGroupColor(todo.group))}
+                      ${animatingBubbles.has(todo.id) ? (bubbleAnimations.get(todo.id) === 'delete' ? 'burst-delete' : 'burst-complete') : ''}
+                    `}
+                      style={{
+                        left: `${screenCoords.screenX - expandedSize/2}px`,
+                        top: `${screenCoords.screenY - expandedSize/2}px`,
+                        width: `${expandedSize}px`,
+                        height: `${expandedSize}px`,
+                        ['--z']: viewport.zoom,
+                        opacity: isBubbleOutsideToday(todo.worldX || 0) ? 0.5 : 1,
+                      }}
+                      onMouseDown={(e) => handleMouseDown(e, todo.id)}
+                      onTouchStart={(e) => handleTouchStartBubble(e, todo.id)}
+                      onClick={(e) => { if (!movedRef.current) selectTodo(todo.id); }}
+                    >
+                      <div className="px-2 text-center leading-snug text-sm" title={todo.text}>
+                        <div className="text-sm md:text-base font-medium line-clamp-3 break-words">
+                          {todo.text}
+                        </div>
+                        <div className="text-xs text-gray-200 mt-1">
+                          Time spent: {formatTime(todo.elapsedTime)}
+                        </div>
+                      </div>
+                      {/* Resizing handle */}
+                      <div
+                        className="resize-handle absolute bottom-1 right-1 w-5 h-5 rounded-full bg-gray-500/70 text-white text-xs flex items-center justify-center cursor-se-resize"
+                        onMouseDown={(e) => handleMouseDown(e, todo.id)}
+                        onTouchStart={(e) => handleTouchStartBubble(e, todo.id)}
+                        title="Resize"
+                      >↘</div>
+                    </div>
+
+                    {/* Draggable action bar with relative positioning */}
+                    <div
+                      key={`${todo.id}-actions`}
+                      className="absolute z-[2000] cursor-move"
+                      style={{
+                        top: `${screenCoords.screenY}px`,
+                        left: `${screenCoords.screenX + expandedSize/2 - expandedSize/5}px`,
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        setIsDraggingActionBar(true);
+                        setActionBarDragStart({ x: e.clientX, y: e.clientY });
+                      }}
+                    >
+                      <div className="flex flex-col gap-1 bg-gray-900/90 text-white border border-gray-700 rounded-xl shadow-xl p-2 min-w-[150px] max-w-[180px] backdrop-blur-sm">
+                        {/* Group Selection */}
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs text-gray-400">Group:</span>
+                          <select
+                            value={todo.group}
+                            onChange={(e) => setTodos(prev => prev.map(t => t.id === todo.id ? {...t, group: e.target.value, color: getGroupColor(e.target.value)} : t))}
+                            className="px-2 py-1 bg-gray-800 text-white rounded text-xs border border-gray-600 w-28"
+                          >
+                            {groups.map(g => (
+                              <option key={g} value={g}>{g}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Manual Coordinate and Size Controls */}
+                        <div className="grid grid-cols-3 gap-1 mb-1 text-xs">
+                          <div className="flex flex-col">
+                            <label className="text-[10px] text-gray-400">X</label>
+                            <input
+                              type="number"
+                              value={Math.round(todo.worldX || 0)}
+                              onChange={(e) => setTodos(prev => prev.map(t => t.id === todo.id ? {...t, worldX: parseFloat(e.target.value) || 0} : t))}
+                              className="px-1 py-0.5 bg-gray-800 text-white rounded text-xs border border-gray-600 w-full"
+                            />
+                          </div>
+                          <div className="flex flex-col">
+                            <label className="text-[10px] text-gray-400">Y</label>
+                            <input
+                              type="number"
+                              value={Math.round(todo.worldY || 0)}
+                              onChange={(e) => setTodos(prev => prev.map(t => t.id === todo.id ? {...t, worldY: parseFloat(e.target.value) || 0} : t))}
+                              className="px-1 py-0.5 bg-gray-800 text-white rounded text-xs border border-gray-600 w-full"
+                            />
+                          </div>
+                          <div className="flex flex-col">
+                            <label className="text-[10px] text-gray-400">Size</label>
+                            <input
+                              type="number"
+                              value={Math.round(todo.size || 150)}
+                              onChange={(e) => setTodos(prev => prev.map(t => t.id === todo.id ? {...t, size: parseFloat(e.target.value) || 150} : t))}
+                              className="px-1 py-0.5 bg-gray-800 text-white rounded text-xs border border-gray-600 w-full"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="h-px bg-gray-700 my-1" />
+
+                        <button
+                          onClick={() => {
+                            if (!selectedTodoId) return;
+                            startTask(selectedTodoId);
+                          }}
+                          className="px-3 py-1 bg-green-700 text-white rounded-lg hover:bg-green-800 text-xs"
+                        >Start</button>
+                        <button
+                          onClick={() => {
+                            pauseSelected();
+                            setSelectedTodoId(null); // Auto-hide after action
+                          }}
+                          className="px-3 py-1 bg-yellow-500 text-gray-900 rounded-lg hover:bg-yellow-400 text-xs"
+                        >Pause</button>
+                        <button
+                          onClick={() => {
+                            if (!selectedTodoId) return;
+                            const id = selectedTodoId;
+                            triggerBubbleAnimation(id, 'complete', () => {
+                              finishTodo();
+                            });
+                            // finishTodo already clears selectedTodoId
+                          }}
+                          className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs"
+                        >Complete</button>
+
+                            <button
+                              onClick={() => {
+                                if (!selectedTodoId) return;
+                                const id = selectedTodoId;
+                                triggerBubbleAnimation(id, 'delete', () => {
+                                  setTodos(prev => prev.filter(t => t.id !== id));
+                                });
+                                setSelectedTodoId(null);
+                              }}
+                              className="px-3 py-1 bg-red-700 text-white rounded-lg hover:bg-red-800 text-xs"
+                            >Delete</button>
+                            <button
+                              onClick={() => {
+                                setSelectedTodoId(todo.id);
+                                // Ensure timers panel is expanded then focus input
+                                setTimersExpanded(true);
+                                setTimeout(()=> currentFocusInputRef.current?.focus(), 0);
+                              }}
+                              className="px-3 py-1 bg-gray-600 text-white rounded-lg hover:bg-gray-500 text-xs"
+                            >Edit</button>
+                            <div className="h-px bg-gray-700 my-1" />
+                            <div className="grid grid-cols-2 gap-1 text-xs">
+                              <button
+                                onClick={() => {
+                                  // Move one step forward
+                                  setTodos(prev => {
+                                    const idx = prev.findIndex(t => t.id === todo.id);
+                                    if (idx === -1 || idx === prev.length - 1) return prev;
+                                    const updated = [...prev];
+                                    [updated[idx], updated[idx + 1]] = [updated[idx + 1], updated[idx]];
+                                    return updated;
+                                  });
+                                }}
+                                className="px-2 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
+                                title="Move forward one step"
+                              >Forward</button>
+                              <button
+                                onClick={() => {
+                                  // Move one step backward
+                                  setTodos(prev => {
+                                    const idx = prev.findIndex(t => t.id === todo.id);
+                                    if (idx === -1 || idx === 0) return prev;
+                                    const updated = [...prev];
+                                    [updated[idx], updated[idx - 1]] = [updated[idx - 1], updated[idx]];
+                                    return updated;
+                                  });
+                                }}
+                                className="px-2 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
+                                title="Move backward one step"
+                              >Backward</button>
+                              <button
+                                onClick={() => {
+                                  // Move to front
+                                  setTodos(prev => {
+                                    const idx = prev.findIndex(t => t.id === todo.id);
+                                    if (idx === -1) return prev;
+                                    const updated = [...prev];
+                                    const [item] = updated.splice(idx, 1);
+                                    updated.push(item);
+                                    return updated;
+                                  });
+                                }}
+                                className="px-2 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
+                                title="Bring to front"
+                              >Front</button>
+                              <button
+                                onClick={() => {
+                                  // Move to back
+                                  setTodos(prev => {
+                                    const idx = prev.findIndex(t => t.id === todo.id);
+                                    if (idx === -1) return prev;
+                                    const updated = [...prev];
+                                    const [item] = updated.splice(idx, 1);
+                                    updated.unshift(item);
+                                    return updated;
+                                  });
+                                }}
+                                className="px-2 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
+                                title="Send to back"
+                              >Back</button>
+                            </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              } else {
+                // Regular bubble (20% expansion for active tasks) and size scales with zoom
+                const isActive = activeTodoId === todo.id;
+                const baseSize = isActive ? bubbleSize * 1.2 : bubbleSize;
+                const activeSize = baseSize * viewport.zoom;
+                return (
+                  <>
+
+
+                    <div
+                      key={todo.id}
+                      onContextMenu={(e)=>{
+                        e.preventDefault();
+                        setContextMenu({ open: true, x: e.clientX, y: e.clientY, todoId: todo.id });
+                      }}
+                      className={`
+                      absolute transition-all duration-150 ease-out todo-bubble
+                      ${activeTodoId === todo.id ? 'bg-green-600' : (todo.color || 'bg-blue-600')} text-white
+                      rounded-full shadow-lg cursor-move select-none
+                      flex flex-col items-center justify-center text-center text-[calc(0.72rem_*_var(--z))] md:text-[calc(0.8rem_*_var(--z))]
+                      hover:scale-[1.03] active:scale-95
+                      ${animatingBubbles.has(todo.id) ? (bubbleAnimations.get(todo.id) === 'delete' ? 'burst-delete' : 'burst-complete') : 'balloon-float'}
+                    `}
+                      style={{
+                        left: `${screenCoords.screenX - activeSize/2}px`,
+                        top: `${screenCoords.screenY - activeSize/2}px`,
+                        width: `${activeSize}px`,
+                        height: `${activeSize}px`,
+                        ['--z']: viewport.zoom,
+                        opacity: isBubbleOutsideToday(todo.worldX || 0) ? 0.5 : 1,
+                      }}
+                    onMouseDown={(e) => handleMouseDown(e, todo.id)}
+                    onTouchStart={(e) => handleTouchStartBubble(e, todo.id)}
+                    onClick={(e) => { if (!movedRef.current) selectTodo(todo.id); }}
+                  >
+                    {/* Display-only text inside bubble; no inline editing */}
+                    <div className="px-2 text-center leading-snug text-sm" title={todo.text}>
+                      <div className="text-sm md:text-base font-medium line-clamp-3 break-words">
+                        {todo.text}
+                      </div>
+                      <div className="text-xs text-gray-200 mt-1">
+                        Time spent: {formatTime(todo.elapsedTime)}
+                      </div>
+                    </div>
+                    {/* Resizing handle */}
+                    <div
+                      className="resize-handle absolute bottom-1 right-1 w-5 h-5 rounded-full bg-gray-500/70 text-white text-xs flex items-center justify-center cursor-se-resize"
+                      onMouseDown={(e) => handleMouseDown(e, todo.id)}
+                      onTouchStart={(e) => handleTouchStartBubble(e, todo.id)}
+                    >↘</div>
+                  </div>
+                  </>
+                );
+              }
+            })}
+          </div>
+        </div>
+      </div>
+
+        {/* UI for adding and finishing todos - separated from canvas, never overlapping */}
+        {isMobile && bottomBarCollapsed ? (
+          // Collapsed state: just a toggle button
+          <div className="fixed bottom-4 right-4 z-30">
+            <button
+              onClick={() => setBottomBarCollapsed(false)}
+              className="p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors"
+              title="Show add task form"
+            >
+              +
+            </button>
+          </div>
+        ) : (
+          // Expanded state: full bottom bar
+          <div
+            className={`fixed bottom-4 ${isMobile ? 'z-30' : 'z-40'} flex flex-col md:flex-row items-stretch gap-2 lg:gap-4 bg-gray-900/80 backdrop-blur-sm p-4 rounded-xl shadow-inner border border-gray-700`}
+            style={{
+              left: isMobile ? '8px' : `${Math.max(leftPanelWidth + 32, 24)}px`,
+              right: '8px',
+              maxWidth: '2000px',
+              marginLeft: 'auto',
+              marginRight: 'auto'
+            }}
+          >
+            {/* Collapse button for mobile */}
+            {isMobile && (
+              <div className="flex justify-end mb-2">
+                <button
+                  onClick={() => setBottomBarCollapsed(true)}
+                  className="text-gray-400 hover:text-white text-sm"
+                  title="Hide add task form"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          <form onSubmit={addTodo} className="w-full flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+            <input
+              type="text"
+              value={newTodo}
+              onChange={(e) => setNewTodo(e.target.value)}
+              placeholder="Add a new task..."
+              className="flex-grow p-3 rounded-xl bg-gray-700 text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+            <select
+              value={selectedGroup}
+              onChange={(e)=>setSelectedGroup(e.target.value)}
+              className="p-3 rounded-xl bg-gray-700 text-gray-100 focus:outline-none w-full sm:w-auto"
+              title="Group"
+            >
+              {groups.map(group => (
+                <option key={group} value={group}>{group}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="px-3 py-3 w-full sm:w-auto whitespace-nowrap bg-blue-600 text-white rounded-xl shadow-md hover:bg-blue-700 transition-colors"
+            >
+              Add Todo
+            </button>
+          </form>
+          <div className="flex gap-2 w-full md:w-auto justify-center md:justify-start">
+            <button
+              onClick={selectRandom}
+              className="px-3 py-3 whitespace-nowrap bg-red-600 text-white rounded-xl shadow-md hover:bg-red-700 transition-colors"
+            >
+              Random Switch
+            </button>
+            <button
+              onClick={goAFK}
+              className="px-3 py-3 whitespace-nowrap bg-white text-black font-bold rounded-xl shadow-md hover:bg-gray-100 transition-colors"
+              title="Away From Keyboard"
+            >
+              AFK
+            </button>
+            {/* Ensure intro dummy disappears immediately when a real todo is added */}
+            {todos.length > 0 && false && <span />}
+          </div>
+          </div>
+        )}
+
+      {/* Timers panel (draggable when in drag mode) - moved outside canvas */}
+      {!rightPanelDocked && (
+        <div
+          className="absolute w-[320px] max-w-[40vw] p-4 rounded-2xl bg-gray-800 shadow-xl"
+          style={{
+            left: rightPanelPos.x,
+            top: rightPanelPos.y,
+            cursor: isPanelDragging && draggingPanel==='right' ? 'grabbing' : 'grab',
+            zIndex: isPanelDragging && draggingPanel==='right' ? 1000 : 100
+          }}
+        >
+          <div className="flex items-center justify-between mb-2 select-none cursor-grab active:cursor-grabbing" onMouseDown={(e)=>onPanelMouseDown(e,'right')}>
+            <h2
+              className="text-xl font-bold cursor-pointer flex items-center gap-2"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTimersExpanded(!timersExpanded);
+              }}
+            >
+              Timers
+              <span className="text-sm">{timersExpanded ? '▼' : '▶'}</span>
+            </h2>
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <button
+                onClick={(e)=>{
+                  e.stopPropagation();
+                  const newDocked = !rightPanelDocked;
+                  setRightPanelDocked(newDocked);
+                  if (newDocked) {
+                    // Move to docked position in bottom-left corner
+                    const rightPanelWidth = 320;
+                    const defaultRightX = 16; // Bottom-left
+                    const panelH = 380;
+                    const defaultRightY = Math.max(8, window.innerHeight - panelH - 16);
+                    setRightPanelPos({ x: defaultRightX, y: defaultRightY });
+                  } else {
+                    // Compute position relative to the root container to avoid off-screen coords
+                    const rootRect = rootRef.current?.getBoundingClientRect();
+                    const containerRect = containerRef.current?.getBoundingClientRect();
+                    const zoomRect = zoomControlsRef.current?.getBoundingClientRect();
+                    if (rootRect && containerRect) {
+                      const debug = 'TimerPosition center toggle->drag';
+                      const panelWidth = 320;
+                      const panelH = 400; // approximate for clamping
+                      const pad = 8;
+                      const canvasLeft = containerRect.left - rootRect.left;
+                      const canvasTop = containerRect.top - rootRect.top;
+                      const canvasW = containerRect.width;
+                      const canvasH = containerRect.height;
+
+                      // Center the panel within the canvas
+                      let x = canvasLeft + (canvasW - panelWidth) / 2;
+                      let y = canvasTop + (canvasH - panelH) / 2;
+
+                      // Ensure the panel stays within the canvas boundaries
+                      x = Math.max(canvasLeft + pad, Math.min(x, canvasLeft + canvasW - panelWidth - pad));
+                      y = Math.max(canvasTop + pad, Math.min(y, canvasTop + canvasH - panelH - pad));
+
+                      console.log(`[${debug}]`, { rootRect, canvasRect: containerRect, panelWidth, panelH, x, y });
+                      setRightPanelPos({ x, y });
+                    } else {
+                      const panelWidth = 320;
+                      const fallbackX = Math.max(8, window.innerWidth - panelWidth - 16);
+                      const fallbackY = 80;
+                      console.log('[TimerPosition fallback] window', { fallbackX, fallbackY });
+                      setRightPanelPos({ x: fallbackX, y: fallbackY });
+                    }
+                  }
+                }}
+                className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white"
+                title={rightPanelDocked ? 'Switch to float mode' : 'Dock to bottom-left corner'}
+              >{rightPanelDocked ? 'float' : 'dock'}</button>
+            </div>
+          </div>
+          {timersExpanded && (
+            <>
+              <div className="text-center text-gray-400 text-sm mb-3">
+                Today is {formatDate(currentTime)}
+              </div>
+
+              {/* Current Focus moved from left panel */}
+              <div className={`p-3 rounded-xl ${getCurrentFocusColor()} text-gray-300 mb-3`}>
+                <div className="text-gray-200 text-sm mb-2">Current Focus</div>
+                <input
+                  ref={currentFocusInputRef}
+                  type="text"
+                  value={
+                    selectedTodoId ? (todos.find(t => t.id === selectedTodoId)?.text || '') :
+                    activeTodoId ? (todos.find(t => t.id === activeTodoId)?.text || '') : ''
+                  }
+                  onChange={(e)=>{
+                    const targetId = selectedTodoId || activeTodoId;
+                    if (!targetId) return;
+                    setTodos(ts=>ts.map(t=>t.id===targetId?{...t,text:e.target.value}:t));
+                  }}
+                  placeholder="Click a bubble to focus"
+                  className="w-full bg-gray-800 p-2 rounded-md focus:outline-none text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                <div className="bg-gray-700 rounded-xl p-4">
+                  <div className="text-gray-400 text-sm">Local time</div>
+                  <div className="text-2xl font-bold mt-1">{formatClock(currentTime)}</div>
+                </div>
+                <div className="bg-gray-700 rounded-xl p-4">
+                  <div className="text-gray-400 text-sm">Since last focus</div>
+                  <div className="text-2xl font-bold mt-1">{sinceLastFocus}</div>
+                </div>
+                <div className="bg-gray-700 rounded-xl p-4">
+                  <div className="text-gray-400 text-sm">Total focus time</div>
+                  <div className="text-2xl font-bold mt-1">{totalFocusTime}</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      </div>
+
+      {/* Right-click context menu */}
+      {contextMenu.open && (
+        <>
+          <div className="context-menu-backdrop" onClick={()=>setContextMenu({open:false,x:0,y:0,todoId:null})}></div>
+          <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+            <div className="text-xs text-gray-400 mb-2">Edit task</div>
+            <input
+              type="text"
+              className="w-64 bg-gray-700 p-2 rounded-md focus:outline-none"
+              value={(() => { const t=todos.find(t=>t.id===contextMenu.todoId); return t? t.text:''; })()}
+              onChange={(e)=> setTodos(ts=>ts.map(t=> t.id===contextMenu.todoId? { ...t, text: e.target.value }: t))}
+            />
+            <div className="flex gap-2 flex-wrap mt-2">
+              {COLORS.map(c => (
+                <button key={c} className={`${c} w-6 h-6 rounded-full`} onClick={()=>{
+                  setTodos(ts=>ts.map(t=> t.id===contextMenu.todoId? { ...t, color: c }: t));
+                }} />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Mount React app
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// CSS for the floating animation (inject to head)
+const styleSheet = document.createElement('style');
+styleSheet.innerText = `
+  @keyframes balloonFloat {
+    0% { transform: translateY(0px) scale(1) rotate(0deg); }
+    50% { transform: translateY(-5px) scale(1.02) rotate(-0.5deg); }
+    100% { transform: translateY(0px) scale(1) rotate(0deg); }
+  }
+  .balloon-float {
+    animation: balloonFloat 6s ease-in-out infinite;
+  }
+
+  /* Enhanced pop/burst effect with particles and more dramatic animation */
+  @keyframes popDelete {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0.0); opacity: 1; }
+    40% { transform: scale(1.25); box-shadow: 0 0 0 18px rgba(255,0,0,0.3); opacity: 0.9; }
+    70% { transform: scale(0.9); box-shadow: 0 0 0 30px rgba(255,0,0,0.15), 0 0 40px rgba(255,0,0,0.1); opacity: 0.6; }
+    100% { transform: scale(0.4); box-shadow: 0 0 0 40px rgba(255,0,0,0), 0 0 60px rgba(255,0,0,0); opacity: 0; }
+  }
+  .burst-delete { /* keep class name used in JSX */
+    animation: popDelete 400ms cubic-bezier(0.1, 0.9, 0.2, 1) forwards;
+    position: relative;
+  }
+  .burst-delete::before, .burst-delete::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0) 70%);
+    transform: translate(-50%, -50%) scale(0);
+    animation: particleExpand 400ms ease-out forwards;
+  }
+  .burst-delete::after {
+    animation-delay: 100ms;
+  }
+  @keyframes particleExpand {
+    0% { transform: translate(-50%, -50%) scale(0); opacity: 0.8; }
+    100% { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+  }
+
+  @keyframes popComplete {
+    0% { transform: scale(1) rotate(0deg); box-shadow: 0 0 0 0 rgba(255,255,255,0.0); opacity: 1; }
+    30% { transform: scale(1.3) rotate(2deg); box-shadow: 0 0 0 20px rgba(0,255,100,0.25); opacity: 0.95; }
+    60% { transform: scale(1.5) rotate(-2deg); box-shadow: 0 0 0 35px rgba(0,255,100,0.15), 0 0 50px rgba(0,255,100,0.1); opacity: 0.7; }
+    100% { transform: scale(0.6) rotate(0deg); box-shadow: 0 0 0 50px rgba(0,255,100,0), 0 0 70px rgba(0,255,100,0); opacity: 0; }
+  }
+  .burst-complete { /* keep class name used in JSX */
+    animation: popComplete 600ms cubic-bezier(0.15, 0.85, 0.3, 1.2) forwards;
+    position: relative;
+  }
+  .burst-complete::before, .burst-complete::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 120%;
+    height: 120%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(100,255,150,0.7) 0%, rgba(100,255,150,0) 70%);
+    transform: translate(-50%, -50%) scale(0);
+    animation: successParticleExpand 600ms ease-out forwards;
+  }
+  .burst-complete::after {
+    width: 140%;
+    height: 140%;
+    animation-delay: 150ms;
+  }
+  @keyframes successParticleExpand {
+    0% { transform: translate(-50%, -50%) scale(0); opacity: 0.8; }
+    100% { transform: translate(-50%, -50%) scale(2.5); opacity: 0; }
+  }
+`;
+document.head.appendChild(styleSheet);
+    </script>
+  </body>
+</html>
